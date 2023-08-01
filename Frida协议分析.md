@@ -776,6 +776,8 @@ adb shell settings delete global global_http_proxy_port
 
 adb reboot
 
+（如果因为代理问题网不行了，打这几条命令估计就可以了）
+
 
 关闭代理
 adb shell settings put global http_proxy : 0
@@ -1039,8 +1041,9 @@ function main(){
 
 main();
 // frida -U -F -l hook.js --no-pause
+```
 
-
+```
 [Pixel 3 XL::嘟嘟牛在线]-> java.lang.Throwable
         at java.util.HashMap.put(Native Method)
         at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:127)  
@@ -1078,45 +1081,1010 @@ login 函数将各种参数放入 HashMap 中，然后调用 requestNetwork 开�
 
 Java 集合 ArrayList 在开发中也很常用，也可以作为关键代码所在位置之一。
 
-依然以该 app 为例子，Hook ArrayList 的 add 方法
+依然以该 app 为例子，Hook ArrayList 的 add 方法，并过滤一下找函数栈
 
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var arrayList = Java.use("java.util.ArrayList");
+      arrayList.add.overload('java.lang.Object').implementation = function(a) {
+        if (a.equals("username=12345678"))
+        {
+          showStacks();
+          console.log("ArrayList.add: ", a);
+        } 
+        return this.add(a);
+      }
+      // arrayList.add.overload('int', 'java.lang.Object').implementation = function(a, b){
+      //   console.log("ArrayList.add: ", a, b);
+      //   return this.add(a, b);
+      // }
+  });
+}
+
+main();
+// frida -U -F -l hook.js --no-pause
 ```
 
 ```
+java.lang.Throwable
+        at java.util.ArrayList.add(Native Method)
+        at com.dodonew.online.http.RequestUtil.paraMap(RequestUtil.java:71)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:112)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+ArrayList.add:  username=12345678
+```
+
+来到 paraMap 函数
+
+```java
+    public static String paraMap(Map<String, String> addMap, String append, String sign) {
+        try {
+            Set<String> keyset = addMap.keySet();
+            StringBuilder builder = new StringBuilder();
+            List<String> list = new ArrayList<>();
+            for (String keyName : keyset) {
+                list.add(keyName + "=" + addMap.get(keyName));
+            }
+            Collections.sort(list);
+            for (int i = 0; i < list.size(); i++) {
+                builder.append(list.get(i));
+                builder.append("&");
+            }
+            builder.append("key=" + append);
+            String checkCode = Utils.md5(builder.toString()).toUpperCase();
+            addMap.put("sign", checkCode);
+            String result = new Gson().toJson(sortMapByKey(addMap));
+            Log.w(AppConfig.DEBUG_TAG, result + "   result");
+            return result;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "";
+        }
+    }
+
+```
+
+- 该代码先把 HashMap 的数据放入 ArrayList，再进行排序
+- 之后放入 String-Builder，拼接成字符串后 MD5 加密得到 sign 值
+
+### 3.2 组件与事件的 Hook
+
+该节中讲解如何利用组件和事件的 Hook 进行 快速定位，包括 定位提示、定位组件 和 定位按钮点击事件。
+
+
+
+#### 3.2.1 Hook Toast 定位提示
+
+依然以某嘟牛登录为例，该 App 在登录失败后，会弹出一个提示：账户或密码错误，根据弹出组件的样式可以猜测使用的 Toast 组件，如果要 Toast 显示出来就要使用到 Toast 类中的 show 方法。
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var toast = Java.use("android.widget.Toast");
+      toast.show.implementation = function() {
+        showStacks();
+        console.log("Toast.show()");
+        return this.show();
+      }
+  });
+}
+
+main();
+// frida -U -F -l hook.js --no-pause
+```
+
+```
+java.lang.Throwable
+        at android.widget.Toast.show(Native Method)
+        at com.dodonew.online.util.ToastMsg.showToastMsg(ToastMsg.java:66)
+        at com.dodonew.online.base.ProgressActivity.showToast(ProgressActivity.java:81)
+        at com.dodonew.online.ui.LoginActivity$2.onResponse(LoginActivity.java:156)
+        at com.dodonew.online.ui.LoginActivity$2.onResponse(LoginActivity.java:145)
+        at com.dodonew.online.http.JsonBaseRequest.deliverResponse(JsonBaseRequest.java:25)
+        at com.android.volley.ExecutorDelivery$ResponseDeliveryRunnable.run(ExecutorDelivery.java:99)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+Toast.show()
+```
+
+可以看到调用栈里有 onResponse 函数，有可能是请求时设置的回调函数，直接去代码里搜索。
+
+其中 requestNetwork 就是发起登录请求的地方，其中 onResponse 函数就是设置的回调函数，当进入 addRequestMap 函数中，可以发现此处是用来加密的。
+
+```java
+    private void requestNetwork(final String cmd, Map<String, String> para, Type type) {
+        showProgress();
+        String url = "http://api.dodovip.com/api/" + cmd;
+        this.request = new JsonRequest(this, url, "", new Response.Listener<RequestResult>() { // from class: com.dodonew.online.ui.LoginActivity.2
+            @Override // com.android.volley.Response.Listener
+            public void onResponse(RequestResult requestResult) {
+                if (requestResult.code.equals(a.e)) {
+                    if (cmd.equals("user/login")) {
+                        DodonewOnlineApplication.loginUser = (User) requestResult.data;
+                        DodonewOnlineApplication.loginLabel = "mobile";
+                        Utils.saveJson(LoginActivity.this, DodonewOnlineApplication.loginLabel, Config.LOGINLABEL_JSON);
+                        LoginActivity.this.intentMainActivity();
+                    }
+                } else {
+                    LoginActivity.this.showToast(requestResult.message);
+                }
+                LoginActivity.this.dissProgress();
+            }
+        }, this, type);
+        this.request.addRequestMap(para, 0);
+        DodonewOnlineApplication.addRequest(this.request, this);
+    }
+
+```
+
+如果登录时不输入账号密码，直接点击登录按钮，可以看到函数栈如下。
+
+```
+java.lang.Throwable
+        at android.widget.Toast.show(Native Method)
+        at com.dodonew.online.util.ToastMsg.showToastMsg(ToastMsg.java:66)
+        at com.dodonew.online.base.ProgressActivity.showToast(ProgressActivity.java:81)
+        at com.dodonew.online.ui.LoginActivity.checkInput(LoginActivity.java:89)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:102)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+Toast.show()
+```
+
+checkInput 和 onClick 代码如下
+
+```java
+    private boolean checkInput(String mobile, String pwd) {
+        String msg = "";
+        if (TextUtils.isEmpty(mobile)) {
+            msg = "手机号码不能为空";
+        } else if (TextUtils.isEmpty(pwd)) {
+            msg = "登录密码不能为空";
+        }
+        if (TextUtils.isEmpty(msg)) {
+            return true;
+        }
+        showToast(msg);
+        return false;
+    }
+
+    @Override // android.view.View.OnClickListener
+    public void onClick(View v) {
+        switch (v.getId()) {
+            case R.id.btn_forget_password /* 2131558592 */:
+                Intent intent = new Intent(this, FindPasswordActivity.class);
+                startActivity(intent);
+                return;
+            case R.id.btn_login /* 2131558593 */:
+                String mobile = ((Object) this.etMobile.getText()) + "".trim();
+                String pwd = ((Object) this.etPwd.getText()) + "".trim();
+                Utils.hideSoftInput(this, this.etPwd);
+                if (checkInput(mobile, pwd)) {
+                    login(mobile, pwd);
+                    return;
+                }
+                return;
+            case R.id.view_third_login /* 2131558594 */:
+            default:
+                return;
+            case R.id.btn_register_now /* 2131558595 */:
+                Intent intent2 = new Intent(this, RegisterActivity.class);
+                startActivity(intent2);
+                return;
+        }
+    }
+
+```
+
+可以发现 app 程序给的提示信息越多，关键代码就越容易被定位。
+
+
+
+#### 3.2.2 Hook findViewById 定位组件
+
+在实际开发中，经常会使用 AppCompatActivity 类的 findViewById 方法，通过组件 id 来获取组件，再通过点击事件来进行。
+
+以该程序的登录按钮为例，通过 SDK 中的 uiautomatorviewer 来查看组件 id，然而我的 SDK 报错？？也没找到解决办法
+
+```
+-Djava.ext.dirs=lib\x86_64;lib is not supported.  Use -classpath instead.
+Error: Could not create the Java Virtual Machine.
+Error: A fatal exception has occurred. Program will exit.
+```
+
+如果成功就会发现登录按钮的 id 为 btn_login，接着用 frida 来查看 id 对应的数值
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var btn_login_id = Java.use("com.dodonew.online.R$id").btn_login.value;
+      console.log("btn login id: ", btn_login_id);
+  });
+}
+
+main();
+// frida -U -F -l hook.js --no-pause
+```
+
+```
+btn login id:  2131558593
+```
+
+接下来 Hook AppCompatActivity 类的 findViewById 方法，来查看调用栈即可定位到登录按钮组件的代码位置，然而怎么都 hook 不上，想起了在第二章的 money 类，不过这次想起或许以 spawn 的方式启动来 hook，attach 可能 hook 的时机不对
+
+```python
+device = frida.get_usb_device()
+pid = device.spawn(["com.dodonew.online"])    # 以挂起方式创建进程
+process = device.attach(pid)
+script = process.create_script(jsCode)
+script.load()
+device.resume(pid)  # 加载完脚本, 恢复进程运行
+sys.stdin.read()
+```
+
+于是这样 hook，不得不说估计看的是一本书，不过依然 hook 不上，程序直接闪退，估计 hook 把程序干烂了，所以我继续去翻，翻到另一本的 hook 法，感觉比较合理，随即就正常启动程序并且 Hook 到了
+
+```python
+import frida, sys, time
+
+jsCode = """
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var btn_login_id = Java.use("com.dodonew.online.R$id").btn_login.value;
+      console.log("btn login id: ", btn_login_id);
+      var appCompatActivity = Java.use("android.support.v7.app.AppCompatActivity");
+      appCompatActivity.findViewById.implementation = function(a) {
+        console.log("[findViewById Hook success] parameter: ", a);
+        if (a == btn_login_id) {
+          showStacks();
+          console.log("appCompatActivity.findViewById: ", a);
+        }
+        return this.findViewById(a);
+      }
+  });
+}
+
+main();
+"""
+
+
+device = frida.get_usb_device()
+pid = device.spawn(["com.dodonew.online"])
+device.resume(pid)
+time.sleep(1)
+session = device.attach(pid)
+script = session.create_script(jsCode)
+script.load()
+input()
+```
+
+```
+btn login id:  2131558593
+[findViewById Hook success] parameter:  2131558825
+[findViewById Hook success] parameter:  2131558826
+[findViewById Hook success] parameter:  2131558828
+[findViewById Hook success] parameter:  2131558830
+[findViewById Hook success] parameter:  2131558563
+[findViewById Hook success] parameter:  2131558567
+[findViewById Hook success] parameter:  2131558593
+java.lang.Throwable
+        at android.app.Activity.findViewById(Native Method)
+        at com.dodonew.online.ui.LoginActivity.initEvent(LoginActivity.java:67)
+        at com.dodonew.online.ui.LoginActivity.onCreate(LoginActivity.java:48)
+        at android.app.Activity.performCreate(Activity.java:7825)
+        at android.app.Activity.performCreate(Activity.java:7814)
+        at android.app.Instrumentation.callActivityOnCreate(Instrumentation.java:1306)
+        at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3245)
+        at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3409)
+        at android.app.servertransaction.LaunchActivityItem.execute(LaunchActivityItem.java:83)
+        at android.app.servertransaction.TransactionExecutor.executeCallbacks(TransactionExecutor.java:135)
+        at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:95)
+        at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2016)
+        at android.os.Handler.dispatchMessage(Handler.java:107)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+appCompatActivity.findViewById:  2131558593
+```
+
+​	不过依然有个小疑问
+
+- 为什么以 frida 命令的方式 -f 启动也会闪退（估计也是和上面上面那个脚本一样，hook的时机不对）
+
+于是找到调用链，进入 initEvent 函数查看
+
+```java
+    private void initEvent() {
+        findViewById(R.id.btn_login).setOnClickListener(this);
+        findViewById(R.id.btn_forget_password).setOnClickListener(this);
+        findViewById(R.id.btn_register_now).setOnClickListener(this);
+    }
+```
+
+
+
+#### 3.2.3 Hook setOnClickListener 定位按钮点击事件
+
+在实际开发中，按钮事件的绑定，通常使用 View 里面的 setOnClickListener 函数，因此可以 hook 该函数定位按钮绑定点击事件的代码位置。
+
+同样以该程序登录按钮为例
+
+1. 通过 SDK 中的 uiautomatorviewer 查看组件 id
+2. 发现登录按钮 id 为 btn_login
+3. Hook setOnClickListener并使用 frida 来获取登录按钮的数值
+4. 对比组件 id，打印函数栈
+
+```python
+import frida, sys, time
+
+jsCode = """
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var btn_login_id = Java.use("com.dodonew.online.R$id").btn_login.value;
+      console.log("btn login id: ", btn_login_id);
+      var view = Java.use("android.view.View");
+      view.setOnClickListener.implementation = function(a) {
+          if (this.getId() == btn_login_id) {
+              showStacks();
+              console.log("view.id: " + this.getId());
+              console.log("view.setOnClickListener is called!");
+          }
+          return this.setOnClickListener(a);
+      }
+  });
+}
+
+main();
+"""
+
+
+device = frida.get_usb_device()
+pid = device.spawn(["com.dodonew.online"])
+device.resume(pid)
+time.sleep(1)
+session = device.attach(pid)
+script = session.create_script(jsCode)
+script.load()
+input()
+```
+
+```
+btn login id:  2131558593
+java.lang.Throwable
+        at android.view.View.setOnClickListener(Native Method)
+        at com.dodonew.online.ui.LoginActivity.initEvent(LoginActivity.java:67)
+        at com.dodonew.online.ui.LoginActivity.onCreate(LoginActivity.java:48)
+        at android.app.Activity.performCreate(Activity.java:7825)
+        at android.app.Activity.performCreate(Activity.java:7814)
+        at android.app.Instrumentation.callActivityOnCreate(Instrumentation.java:1306)
+        at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3245)
+        at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3409)
+        at android.app.servertransaction.LaunchActivityItem.execute(LaunchActivityItem.java:83)
+        at android.app.servertransaction.TransactionExecutor.executeCallbacks(TransactionExecutor.java:135)
+        at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:95)
+        at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2016)
+        at android.os.Handler.dispatchMessage(Handler.java:107)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+view.id: 2131558593
+view.setOnClickListener is called!
+```
+
+之后的代码就只贴出 js 代码，默认以spawn启动睡一秒再加载js代码来Hook程序。
+
+从这个调用栈可以知道 setOncClickListener 上一级是 initEvent，所以单机登录按钮后，会触发同一个类下定义的 onClick 函数，也可以定位到关键函数。
+
+
+
+### 3.3 常用类的 Hook
+
+在本节中，会讲解常用类的 Hook 来实现关键代码的快速定位，包括定位 用户输入、定位JSON数据、定位排序算法、定位字符串转化、定位字符串操作和定位 Base64 编码。
+
+
+
+#### 3.3.1 Hook TextUtils 定位用户输入
+
+在实际开发中，从 EditText 组件中获取用户输入的数据后，通常要判断是否为空，就可能会使用到 TextUtils 的 isEmpty 方法，这是定位到关键代码的方法之一，不过这个比较容易自己实现所以不优先考虑，这个依然用某牛作为例子。
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var textUtils = Java.use("android.text.TextUtils");
+      textUtils.isEmpty.implementation = function(a) {
+        if (a == "12345678") {
+          showStacks();
+          console.log("TextUtils.isEmpty: ", a);
+        }
+        return this.isEmpty(a);
+      }
+  });
+}
+
+main();
+```
+
+点击一次按钮即可发现调用栈找到关键函数
+
+```
+TextUtils.isEmpty:  12345678
+java.lang.Throwable
+        at android.text.TextUtils.isEmpty(Native Method)
+        at com.dodonew.online.ui.LoginActivity.checkInput(LoginActivity.java:81)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:102)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+```
+
+
+
+#### 3.3.2 Hook JSONObject 定位 JSON 数据
+
+在协议逆向中，客户端与服务端进行数据交互时，通常会使用 JSON 数据作为其中间数据进行交互。
+
+这时候就会有一些 JSON 解析相关的类，如 
+
+JSONObject
+
+- 这个类使用的比较少，因为不好用
+
+Gson
+
+- 这个使用的相对较多，但 Gson 不是系统类，可以被混淆
+
+尝试 Hook 某牛的 JSONObject 类的 put 和 getString 方法啊，打印函数栈
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var JSONObject = Java.use("org.json.JSONObject");
+      JSONObject.put.overload('java.lang.String', 'java.lang.Object').implementation = function(a, b) {
+        showStacks();
+        console.log("JSONObject.put: ", a, b);
+        return this.put(a, b);
+      }
+
+      JSONObject.getString.implementation = function(a) {
+        showStacks();
+        var result = this.getString(a);
+        console.log("JSONObject.getString", a, result);
+        return result;
+      }
+  });
+}
+
+main();
+```
+
+```
+java.lang.Throwable
+        at org.json.JSONObject.put(Native Method)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:116)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+JSONObject.put:  Encrypt NIszaqFPos1vd0pFqKlB42Np5itPxaNH//FDsRnlBfgL4lcVxjXii/UNcdXYMk0EKKwKT83MJV3w
+n9UH/0aC9QR62XNqK5gvtAKKlqvr0gYHP6Wv21pfIAEltPWq2jXnzUerAo/cFy4/VvASBSJagVJt
+oUwVbsySZjTwG2MU/BaK7d9s2aAzTBiw223P7Kocpm5izsa+MiXHE6pv3Os3vQ==
+```
+
+JSONObject 类的 put 有很多重载方法，这里只是其中一种。
+
+从上述输出结果来看，通过 Hook JSONObject 类的 put 方法，定位到的是数据提交的地方，每次点击看到回显依然可以通过这个调用链找到关键代码。而 Hook getString 方法定位到的是返回相应解析的地方（不过我这里没 hook 到）。
+
+
+
+#### 3.3.3 HookCollections 定位排序算法
+
+在 app 应用程序请求数据时，为了确保数据不被篡改，通常会在请求参数上加上一个 sign 签名算法，这个签名算法一般使用摘要算法进行加密，该 sign 有以下几个特点
+
+- 明文不一样，摘要结果肯定不一样（实际存在哈希碰撞）
+- 摘要结果不可逆
+- 摘要的长度固定
+
+**一般 App 在进行数据签名的时候，会对数据进行排序。**因为摘要结果不可逆，服务端需要根据接收的数据来复现算法，以此来对比摘要结果，而排序可以保证不会因为参数顺序不同而导致摘要结果不同。
+
+开发中比较常用的排序有 Collections 的 sort 方法、Arrays 的 sort 方法等，当然也可以自写排序算法。依然以某牛为例子，尝试 Hook Collections 的 sort 方法，打印函数栈
+
+```
+java.lang.Throwable
+        at java.util.Collections.sort(Native Method)
+        at com.dodonew.online.http.RequestUtil.paraMap(RequestUtil.java:73)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:112)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+Collections.sort List:  function toString() {
+    [native code]
+}
+java.lang.Throwable
+        at java.util.Collections.sort(Native Method)
+        at java.util.Collections.sort(Collections.java:159)
+        at java.util.Collections.sort(Native Method)
+        at com.dodonew.online.http.RequestUtil.paraMap(RequestUtil.java:73)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:112)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+Collections.sort List Comparator:  [object Object]	
+```
+
+同样可以从调用链中找到关键函数，其中有一点就是 a.toString() 之后得到的是 [object Object]，如果要看到集合中的内容，就需要使用 Java.cast 进行向下转型。Collections 的 sort 方法可以接收 List 接口，一般传入的是实现了该接口的 ArrayList 集合。
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var collections = Java.use("java.util.Collections");
+
+      collections.sort.overload('java.util.List', 'java.util.Comparator').implementation = function(a, b) {
+        showStacks();
+        var result = Java.cast(a, Java.use("java.util.ArrayList"));
+        console.log("Collections.sort List Comparator: ", result.toString());
+        return this.sort(a, b);
+      }
+  });
+}
+
+main();
+```
+
+```
+java.lang.Throwable
+        at java.util.Collections.sort(Native Method)
+        at java.util.Collections.sort(Collections.java:159)
+        at com.dodonew.online.http.RequestUtil.paraMap(RequestUtil.java:73)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:112)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+Collections.sort List Comparator:  [timeStamp=1690765681941, loginImei=Androidnull, equtype=ANDROID, userPwd=111111, username=111111]
+```
+
+向下转型，说实话没太搞懂感觉就是个强转类型
+
+> https://blog.csdn.net/xyh269/article/details/52231944
+
+java.cast
+
+```
+用法:
+public T[] cast(Object obj)
+
+参数：此方法接受参数obj，它是要转换的对象
+
+返回值：此方法以对象形式转换后返回指定的对象
+```
+
+
+
+#### 3.3.4 Hook String  定位字符串转换
+
+**通常的在数据加密之前，把字符串转换为字节，这时候可能会使用到 String 类的 getBytes 方法。**
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var str = Java.use("java.lang.String");
+      str.getBytes.overload().implementation = function() {
+        showStacks();
+        var result = this.getBytes();
+        var newStr = str.$new(result);
+        console.log("str.getBytes: ", newStr);
+
+        return result;
+    	}
+      str.getBytes.overload('java.lang.String').implementation = function(a) {
+        showStacks();
+        var result = this.getBytes(a);
+        var newStr = str.$new(result, a);
+        console.log("str.getBytes: ", newStr);
+
+        return result;
+    	}
+  });
+}
+
+main();
+```
+
+```
+java.lang.Throwable
+        at java.lang.String.getBytes(Native Method)
+        at com.dodonew.online.http.RequestUtil.encodeDesMap(RequestUtil.java:129)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:113)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+str.getBytes:  {"equtype":"ANDROID","loginImei":"Androidnull","sign":"69E12F67DB85D6BF26DCFA2D49B2422B","timeStamp":"1690809525529","userPwd":"rrrrer","username":"1234568"}
+
+java.lang.Throwable
+        at java.lang.String.getBytes(Native Method)
+        at android.util.Base64.decode(Base64.java:119)
+        at com.dodonew.online.util.DesSecurity.decrypt64(DesSecurity.java:54)
+        at com.dodonew.online.http.RequestUtil.decodeDesJson(RequestUtil.java:174)
+        at com.dodonew.online.http.JsonRequest.parseNetworkResponse(JsonRequest.java:82)
+        at com.android.volley.NetworkDispatcher.run(NetworkDispatcher.java:121)
+
+str.getBytes:  2v+DC2gq7Rs2vBLjHBwgrO0gyauGMTE6
+```
+
+String 的 getBytes 方法存在很多重载形式，建议把这些方法全部重载，或者使用 Objection 来自动化 Hook 该方法的所有重载形式。
+
+
+
+#### 3.3.5 Hook StringBuilder 定位字符串操作
+
+​	**Java 中的字符串是只读的，对字符串进行修改、拼接等操作其实都会创建新的字符串来返回。**
+
+如果有大量的字符串要修改、拼接效率是极低的，所以就会使用到 StringBuilder 来避免大量频繁创建的字符串，因此可以尝试 Hook StringBuilder 的 toString 方法来定位关键代码。
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var stringBuilder = Java.use("java.lang.StringBuilder");
+      stringBuilder.toString.implementation = function() {
+        var result = this.toString.apply(this, arguments);
+        if (result == "username=12345678") {
+          showStacks();
+          console.log("stringBuilder.toString is called! ", result);
+        }
+        return result;
+      }
+  });
+}
+
+main();
+```
+
+```
+java.lang.Throwable
+        at java.lang.StringBuilder.toString(Native Method)
+        at com.dodonew.online.http.RequestUtil.paraMap(RequestUtil.java:71)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:112)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+stringBuilder.toString is called!  username=12345678
+```
+
+即使代码中直接字符串相加，类似 "PZ" + "FRIDA"，实际编译以后，依然使用的是 StringBuilder，与 StringBuilder 的同类函数还有 StringBuffer，在程序不崩溃的前提下可以一起 Hook。
+
+
+
+#### 3.3.6 Hook Base64 定位编码
+
+加密数据之后，需要进行 Base64 编码或者 Hex 编码，这时候可以尝试 Hook Base64 的 encodeToString 方法来定位关键代码所在位置，这个方法也容易实现所以不优先考虑。
+
+```
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+  Java.perform(function(){
+      var base64 = Java.use("android.util.Base64");
+      base64.encodeToString.overload('[B', 'int').implementation = function(a, b) {
+        showStacks();
+        var result = this.encodeToString(a, b);
+        console.log("Base64.encodeToString: ", JSON.stringify(a), result);
+        return result;
+      }
+  });
+}
+
+main();
+```
+
+```
+java.lang.Throwable
+        at android.util.Base64.encodeToString(Native Method)
+        at com.dodonew.online.util.DesSecurity.encrypt64(DesSecurity.java:49)
+        at com.dodonew.online.http.RequestUtil.encodeDesMap(RequestUtil.java:129)
+        at com.dodonew.online.http.JsonRequest.addRequestMap(JsonRequest.java:113)
+        at com.dodonew.online.ui.LoginActivity.requestNetwork(LoginActivity.java:161)
+        at com.dodonew.online.ui.LoginActivity.login(LoginActivity.java:134)
+        at com.dodonew.online.ui.LoginActivity.onClick(LoginActivity.java:103)
+        at android.view.View.performClick(View.java:7259)
+        at android.view.View.performClickInternal(View.java:7236)
+        at android.view.View.access$3600(View.java:801)
+        at android.view.View$PerformClick.run(View.java:27892)
+        at android.os.Handler.handleCallback(Handler.java:883)
+        at android.os.Handler.dispatchMessage(Handler.java:100)
+        at android.os.Looper.loop(Looper.java:214)
+        at android.app.ActivityThread.main(ActivityThread.java:7356)
+        at java.lang.reflect.Method.invoke(Native Method)
+        at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:492)
+        at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:930)
+
+Base64.encodeToString:  [52,-117,51,106,-95,79,-94,-51,111,119,74,69,-88,-87,65,-29,99,105,-26,43,79,-59,-93,71,-1,-15,67,-79,25,-27,5,-8,11,-30,87,21,-58,53,-30,-117,-11,13,113,-43,-40,50,77,4,40,-84,10,79,-51,-52,37,93,-54,-6,-96,111,-127,-121,51,-7,-104,108,80,-72,-97,112,36,77,95,127,123,-79,-101,5,-79,53,86,68,-73,80,-73,-95,110,-53,87,-62,-64,93,113,-94,85,28,-7,67,56,-126,-108,98,-65,20,-104,8,16,42,79,124,-68,-15,-5,49,-21,-4,-120,-95,-80,63,-72,-90,3,-91,-101,-7,32,102,-118,91,-128,94,-39,114,31,66,102,-27,-7,45,50,-81,-24,63,-93,-85,38,-64,-4,45,36,-75,57,91,-50,59,-76,-40,-83,109] NIszaqFPos1vd0pFqKlB42Np5itPxaNH//FDsRnlBfgL4lcVxjXii/UNcdXYMk0EKKwKT83MJV3K
++qBvgYcz+ZhsULifcCRNX397sZsFsTVWRLdQt6Fuy1fCwF1xolUc+UM4gpRivxSYCBAqT3y88fsx
+6/yIobA/uKYDpZv5IGaKW4Be2XIfQmbl+S0yr+g/o6smwPwtJLU5W847tNitbQ==
+```
+
+android.util.Base64 的 encodeToString 方法有两个重载方法，上述只用了一个。其他编码相关类有 java.net.URLEncoder、java.util.Base64 和 okio.Base64、okio.ByteString 等。
+
+
+
+### 3.4 其他类的定位
+
+本节会对关键代码中一些不常用的类进行 Hook，包括定位接口的实现类和定位抽象类的实现类。
+
+（等我推进以下Android 那边的进度）
 
 
 
 
 
+### 3.5 实战：去除应用程序的强制升级
+
+在某些应用程序中经常会出现强制升级，无法使用旧版本，如果按取消就会强制退出。
+
+如果想强制绕过升级有两种方法：
+
+1. 通过页面跳转
+2. 通过 Hook 定位，去除强制升级
+
+第一种在 Objection 的使用中会介绍，现在来讲第二种
+
+书上给的例子界面烂了...（接下来假设例子没烂）
+
+首先进入程序进行版本更新前会弹出提示信息，根据提示信息的样式猜测使用了 Toast 组件，于是进行 Toast Hook，可以发现一个名为 com.xxx.util.UpgraderUtil $11 $2.run 的方法，然后用 Objection 来 Hook 该类下的所有方法（而该工具在第四章介绍，为什么这边就用上了？？）
+
+于是找到关键类 Upgrader，随后找到关键函数
+
+```java
+    public static int a(Context context) {
+        try {
+            if (h == null) {
+                h = context.getPackageName();
+            }
+            return context.getPackageManager().getPackageInfo(h, 0).versionCode;
+        } catch (PackageManager.NameNotFoundException e) {
+            return -1;
+        }
+    }
+```
+
+该函数通过 Context 获得包管理器，之后从包相关信息中取出当前 App 应用程序的 versionCode，从 APP 的弹窗可知最新版本为 6.0.5，因此可以 Hook 该函数将返回值修改为最新版本。
+
+```js
+var upgraderUtil = Java.use("com.xxxx.util.UpgraderUtil");
+upgraderUtil.a.overload('android.content.Context').implementation = function (context) {
+    showStacks();
+    var result = this.a(context);
+    console.log("versionCode: ", result);
+    return 605;
+}
+```
+
+随后就不会出现弹出强制升级的页面，此外还可以找到强制升级的上级函数，更改上级函数的调用，也可以去除强制升级。
+
+尝试将 com.xxx.util.Upgrader.b(java.lang.String) 的函数体设置为空，也可以去除强制升级
+
+```js
+      upgrader.b.overload('java.lang.String').implementation = function(context) {
+        return false;
+      }
+```
 
 
 
+**小结**
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+关键代码定位方法喝多，基本的思路就是 Hook 一些不变的函数，并打印调用栈的信息。定位的思路不止可以用于 Java 层函数，对于 so 层函数也是使用的。
 
 
 

@@ -195,7 +195,7 @@ GetFlag!
 
 
 
-### Frida RPC 远程调用
+Frida RPC 远程调用
 
 那么在看雪上发现一篇文章讲了用RPC直接爆破出来了，那么是什么个原理？
 
@@ -550,11 +550,110 @@ GetFlag!
 
 
 
+## [网鼎杯 2020 青龙组]bang
 
+历史遗留题，当初dexdump的报错一直不知道该怎么修，今日Frida学习过程中突然感觉又行了，于是真行了。--2023.7.31
 
+**0x00 Daily Shell Check**
 
+第一代壳，可以直接 dump 脱
 
-记录报错	
+![image-20230731102443034](从0开始的安卓TIME/image-20230731102443034.png)
+
+随后我就在不断尝试 frida-dexdump 脱壳
+
+> https://github.com/hluwa/FRIDA-DEXDump 
+
+以一种 attach 的方式脱
+
+```
+frida-dexdump.exe -U -p 19757
+```
+
+但是不行，各种各样的报错，于是换了一个脱法
+
+```
+frida-dexdump.exe -U -f com.example.how_debug -o .
+```
+
+这样 spwan 挂起的方式就能成功 dump 了，估计是之前 attach 时机的问题，成功 dump 下来就能分析了，不过还发现一个把所有 dump 下来的 dex 打包的脚本
+
+```python
+import os
+import zipfile
+import argparse
+
+def rename_class(path):
+    files = os.listdir(path)
+    dex_index = 0
+    if path.endswith('/'):
+        path = path[:-1]
+        print(path)
+    for i in range(len(files)):
+        if files[i].endswith('.dex'):
+            old_name = path + '/' + files[i]
+            if dex_index == 0:
+                new_name = path + '/' + 'classes.dex'
+            else:
+                new_name = path + '/' + 'classes%d.dex' % dex_index
+            dex_index += 1
+            if os.path.exists(new_name):
+                continue
+            os.rename(old_name, new_name)
+    print('[*] 重命名完毕')
+
+def extract_META_INF_from_apk(apk_path, target_path):
+    r = zipfile.is_zipfile(apk_path)
+    if r:
+        fz = zipfile.ZipFile(apk_path, 'r')
+        for file in fz.namelist():
+            if file.startswith('META-INF'):
+                fz.extract(file, target_path)
+    else:
+        print('[-] %s 不是一个APK文件' % apk_path)
+
+def zip_dir(dirname, zipfilename):
+    filelist = []
+    if os.path.isfile(dirname):
+        if dirname.endswith('.dex'):
+            filelist.append(dirname)
+    else:
+        for root, dirs, files in os.walk(dirname):
+            for dir in dirs:
+                # if dir == 'META-INF':
+                # print('dir:', os.path.join(root, dir))
+                filelist.append(os.path.join(root, dir))
+            for name in files:
+                # print('file:', os.path.join(root, name))
+
+                filelist.append(os.path.join(root, name))
+
+    z = zipfile.ZipFile(zipfilename, 'w', zipfile.ZIP_DEFLATED)
+    for tar in filelist:
+        arcname = tar[len(dirname):]
+
+        if ('META-INF' in arcname or arcname.endswith('.dex')) and '.DS_Store' not in arcname:
+            # print(tar + " -->rar: " + arcname)
+            z.write(tar, arcname)
+    print('[*] APK打包成功，你可以拖入APK进行分析啦！')
+    z.close()
+
+if __name__ == '__main__':
+    args = {
+        'dex_path': 'C:\\Users\\PZ\\Desktop\\dex',
+        'apk_path': 'C:\\Users\\PZ\\Desktop\\signed.apk',
+        'output': 'Z:\\rev\\rev.apk'
+    }
+
+    rename_class(args['dex_path'])
+    extract_META_INF_from_apk(args['apk_path'], args['dex_path'])
+    zip_dir(args['dex_path'], args['output'])
+
+```
+
+不过好像是有点报错，不过雀氏合并了，java层 flag 就明文就不写辣
+
+# 记录报错	
 
 crosshatch:/ # ./data/local/tmp/frida-server
 
