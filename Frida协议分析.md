@@ -2090,11 +2090,115 @@ upgraderUtil.a.overload('android.content.Context').implementation = function (co
 
 
 
+## 算法"自吐"脚本开发
+
+### 4.5 Objection 辅助 Hook
+
+该工具实际上做了对 Frida 框架的进一步封装，通过输入一系列的命令即可完成 Hook，不过无法对 so 代码进行 Hook，目前介绍的方法都是对 Java 层进行 Hook。
+
+
+
+#### 4.5.1 Objection 的安装与基本使用
+
+直接 pip 安装即可，通常使用以下命令附加 Android 应用，不过要在 Android 端线开启 frida-server
+
+```
+objection -g [packageName] explore
+```
+
+如果 Objection 没有找到进行，会以 spawn 方式启动进程，在 objection 中，有一些必须熟练掌握的命令
+
+1. 查找相关方法
+   - 列出所有已经加载的类：android hooking list classes
+   - 列出类的所有方法：android hooking list class_methods < 路径.类名 >
+   - 在所有已加载的类中搜索包含特定关键字的类：android hooking search classes < pattern >
+
+2. Hook 相关方法
+   - Hook 类的所有方法（不包含构造方法）：android hooking watch class < 路径.类名 >
+   - Hook 类的构造方法：android hooking watch class_method < 路径.类名.$init >
+   - Hook 方法的所有重载：android hooking watch class_method < 路径.类名.方法名 >
+   - Hook 方法的参数、返回值和调用栈：android hooking watch class_method < 路径.类名.方法名 > --dump-args --dump-return --dump-backtrace
+   - Hook 单个重载函数，需要指定参数类型，多个参数用逗号隔开：android hooking watch class_method < 路径.类名.方法名 > "< 参数类型 >"
+   - 查看 Hook 了多少个类：jobs list
+   - 取消 Hook：jobs kill < taskId >
+
+接下来讲解在 Objection 中如何搜索实例，以及如何通过实例去调用**静态**和**实例方法**，启动 frida server
+
+```
+objection.exe -g com.xiaojianbang.app explore
+```
+
+![image-20230801200439549](Frida协议分析/image-20230801200439549.png)
+
+先通过该命令在 堆 中搜索实例
+
+```
+android heap search instances <类名>
+```
+
+于是搜索 com.xiaojianbang.hook.Wallet 该类，一开始是没有返回值的，要按下 TEST 按钮，再次运行命令，才会创建 Wallet 对象
+
+![image-20230801200842490](Frida协议分析/image-20230801200842490.png)
+
+现在可以通过这里的 Hashcode 去调用静态和实例方法
+
+![image-20230801202032938](Frida协议分析/image-20230801202032938.png)
+
+如果是调用带有参数的方法，需要该命令，进入后就可以开始编写 js 代码，clazz用来代表当前类
+
+![image-20230801202117494](Frida协议分析/image-20230801202117494.png)
+
+再来看看 Objection 的非标准端口和 spawn。如果当前启动的 frida-server 是标准端口，则直接使用 Objection 即可完成附加，但如果是非标准端口则使用如下命令启动
+
+```
+./frida-server -l 0.0.0.0:8888
+```
+
+这时再使用 Objection 附近的进程就发现无法进行连接了？？（书上这话是不是搓了）
+
+再来介绍三个新的命令行参数
+
+- -N：指定 network
+- -h：指定 host，默认 127.0.0.1
+- -p：指定 port，默认 27042
+
+借助上述即可完成对 ip 和 端口的连接
+
+```
+objection -N -h <IP> -p <Port> -g <进程名> explore
+```
+
+之前介绍的 Hook，是启动 Android 应用后才去 Hook，如果想在安卓应用启动前就进行 Hook 也是可以
+
+```
+objection -g <进程名> explore --startup-command "android hooking watch class '<路径.类名>'"
+```
+
+
+
+#### 4.5.2 实战：某电竞界面跳转
+
+配套例子里没找到这个，不过内容也比较简单，讲述一个程序出生在异常界面，随后通过 objection 跳转到正常界面。
+
+先通过命令查看当前异常界面的 activity
+
+```
+android hooking list activities
+```
+
+然后发现一个异常一个正常，随后跳转到正常界面
+
+```
+android intent launch_activity <活动名>
+```
+
+
+
 ## Frida框架so层基本应用
 
-### 获取 Module
+### 5.1 获取 Module
 
-#### 通过模块名来获取 Module
+#### 5.1.1 通过模块名来获取 Module
 
 Module 提供了很多模块相关的操作，如 枚举导出表、导入表、符号表，获取导出函数地址、模块基地址等等
 
@@ -2103,25 +2207,270 @@ Module 提供了很多模块相关的操作，如 枚举导出表、导入表、
     console.log(JSON.stringify(module));
 ```
 
+```
+{"name":"libxiaojianbang.so","base":"0x7390e07000","size":28672,"path":"/data/app/com.xiaojianbang.app-TrgdA_fXRPAQsB7lpte-TA==/lib/arm64/libxiaojianbang.so"}
+```
+
 还有个类似的方法是 getModuleByName，不过该 方法如果没找到是报错，而 find 是返回 null，所以 find 彳亍！
 
 JSON.stringify 可以用来打印 Module 对象的一些属性。
 
+要注意的一点是 hook so 层必须要等到 so 加载了才能 hook，之前不懂在那一直 hook 不上，可以发现这里加载了 so，而调用它的是这三个按钮。
+
+![image-20230802084626463](Frida协议分析/image-20230802084626463.png)
 
 
-#### 通过地址来获取 Module
+
+#### 5.1.2 通过地址来获取 Module
 
 ```
-Process.findModuleByName(address)
+Process.findModuleByAddress(address);
+Process.getModuleByAddress(address);
 ```
 
-传入的地址为模块的任意一地址即可，也就是说得到了一共函数地址，就能通过该方法来快速知道该函数注册在哪个 so 文件中定义的。
+传入的地址为模块的任意一地址即可，也就是说得到了一个函数地址，就能通过该方法来快速知道该函数注册在哪个 so 文件中定义的。
 
 函数原型
 
 ```
 function findModuleByAddress(address: NativePointerValue): Module | null;
+function getModuleByAddress(address: NativePointerValue): Module;
 ```
 
 其中 NativePointerValue 就是 NativePointer，在 Frida 中用来表示指针。
+
+```
+interface ObjectWrapper {
+    handle: NativePointer;
+}
+type NativePointerValue = NativePointer | ObjectWrapper;
+```
+
+NativePointerValue 就是 NativePointer，接口 ObjectWrapper 的句柄也是 NativePointer。
+
+```
+function enumerateModules(): Module[];
+```
+
+除此之外还有一个 enumerateModules，可以直接获取当前进程中所有模块，当不知道某个 so 是出自于哪个 so 文件就可以用这种方式枚举所有的模板，再通过枚举模块的导入、导出、符号表确定是哪个 so 文件以及对应的函数地址。
+
+
+
+#### 5.1.3 Process 中的常用属性和方法
+
+该小节将对 Process 中的常用属性和方法做出整体介绍。
+
+- Process.id：返回当前进行的 pid
+- Process.arch：返回当前进程的架构
+- Process.platform：返回当前进程的平台
+- Process.pageSize：返回虚拟内存页的大小
+- Process.pointerSize：返回指针的大小，32 位的程序为 4 字节，64位 的程序为 8 字节
+- Process.getCurrentThreadId()：返回当前线性 id
+- Process.findRangeByAddress(address)：通过地址寻找内存范围，可以用来查看某段内存区域的基址、大小、权限等，该函数可以用来简易判断传入的值是否为内存地址
+- Process.getRangeByAddress(address)：同上，找不到就抛出错误
+- Process.setExceptionHandler(callback)：设置异常回调
+
+
+
+### 5.2 枚举符号
+
+#### 5.2.1 枚举模块的导入表
+
+在 so 文件开发中，会使用到很多系统函数，而这些函数会出现在 so 文件的导入表中，如果需要 Hook 这些函数，就要先获得这些函数的地址。
+
+实际操作中要获取到对应的 Module，再通过 Module 中的 enumerateImports 方法来枚举该 Module 中的导入表，进而得到对应的导入表地址。
+
+查看源码中的声明
+
+```
+enumerateImports(): ModuleImportDetails[];
+```
+
+该方法返回 ModuleImportDetails 的数组，里面有一些常用的属性
+
+```js
+var imports = Process.getModuleByName("libxiaojianbang.so").enumerateImports();
+console.log(JSON.stringify(imports[0]));
+//{"type":"function","name":"__cxa_atexit","module":"/apex/com.android.runtime/lib/bionic/libc.so","address":"0xedf050b9"}
+```
+
+- name 属性表示导入函数名
+- module 属性表示该导入函数来自哪个 so 文件
+- address 属性表示导入函数的内存地址 
+
+综上所述，如果要得到该 so 文件里的某一个导入函数，就可以枚举导入表，记录函数地址即可
+
+```js
+var improts = Process.findModuleByName("libxiaojianbang.so").enumerateImports();
+var sprintf_addr = null;
+for(let i = 0; i < improts.length; i++){
+    let _import = improts[i];
+    if(_import.name.indexOf("sprintf") != -1){
+        sprintf_addr = _import.address;
+        break;
+    }
+}
+console.log("sprintf_addr: ", sprintf_addr);
+//sprintf_addr:  0x7bc0debaa0
+```
+
+
+
+#### 5.2.2 枚举模块的导出表
+
+在 so 文件开发中，一般会有一些导出函数，如 JNI 静态注册的函数、需要导出给其他 so 文件使用的函数，以及 JNI_OnLoad 函数等。
+
+同样的，如果要 Hook 这些函数，也要得到这些函数地址，同样也可以获得对应的 Module 后，通过 Module 中的 enumerateExports 方法来枚举该 Module 中的导出表，进而得到对应导出函数地址。
+
+源码中的声明
+
+```
+enumerateExports(): ModuleExportDetails[];
+```
+
+该方法返回 ModuleExportDetails 数组，同样打印一下看看
+
+```
+var exports = Process.getModuleByName("libxiaojianbang.so").enumerateExports();
+console.log(JSON.stringify(exports[0]));
+//{"type":"function","name":"JNI_OnLoad","address":"0xc68995f1"}
+```
+
+该对象就不需要 module 了，因为导出函数必然来自当前的 so 文件，如果要得到该 so 文件中的 ._Z8MD5FinalP7MD5_CTXPh 函数地址，代码如下
+
+```js
+var exports = Process.findModuleByName("libxiaojianbang.so").enumerateExports();
+var MD5Final_addr = null;
+for(let i = 0; i < exports.length; i++){
+    let _export = exports[i];
+    if(_export.name.indexOf("_Z8MD5FinalP7MD5_CTXPh") != -1){
+        MD5Final_addr = _export.address;
+        break;
+    }
+}
+console.log("MD5Final_addr: ", MD5Final_addr);
+//MD5Final_addr:  0x7ad0beb988
+```
+
+导出函数的名字以 IDA 汇编界面中的名字为准
+
+![image-20230803165955789](Frida协议分析/image-20230803165955789.png)
+
+
+
+#### 5.2.3 枚举模块的符号表
+
+在获取相应的 Module 后，可以通过 Module 中的 enumerateSymbols 方法来枚举该 Module 中的符号表，进而得到出现在符号表中的函数地址和。
+
+源码中的声明
+
+```
+enumerateSymbols(): ModuleSymbolDetails[];
+```
+
+属性和之前的导出表差不多，就不赘述了。
+
+综上所述，如果要得到 RegisterNatives 的内存地址，代码如下
+
+```js
+var symbols = Process.getModuleByName("libart.so").enumerateSymbols();
+var RegisterNatives_addr = null;
+for (let i = 0; i < symbols.length; i++) {
+    var symbol = symbols[i];
+    if(symbol.name.indexOf("CheckJNI") == -1 && symbol.name.indexOf("RegisterNatives") != -1) {
+        RegisterNatives_addr = symbol.address;
+    }
+}
+console.log("RegisterNatives_addr: ", RegisterNatives_addr);
+//RegisterNatives_addr:  0x7b3ebe9158
+```
+
+在 libart.so 的符号表中，函数名包括 RegisterNatives 的函数有两个，其中一个带有 ChckJNI。此处获取的是不带有 CheckJNI 并且函数名包含 RegisterNatives 的函数地址。
+
+在实际应用中，一般对于系统 so 文件使用 enumerateSymbols 枚举符号表，对 App 程序本身的 so 文件，通常符号表会被删除，再使用 enumerateExports 枚举导出表即可。
+
+如果不知道某个系统函数来自于哪个 so 文件，可以使用 Process.enumerateModules() 枚举所有的 Module，再查询符号表与导出表，代码如下
+
+```js
+function findFuncInWitchSo(funcName) {
+    var modules = Process.enumerateModules();
+    for (let i = 0; i < modules.length; i++) {
+        let module = modules[i];
+        let _symbols = module.enumerateSymbols();
+        for (let j = 0; j < _symbols.length; j++) {
+            let _symbol = _symbols[i];
+            if(_symbol.name == funcName){
+                return module.name + " " + JSON.stringify(_symbol);
+            }
+        }
+        let _exports = module.enumerateExports();
+        for (let j = 0; j < _exports.length; j++) {
+            let _export = _exports[j];
+            if(_export.name == funcName){
+                return module.name + " " + JSON.stringify(_export);
+            }
+        }
+    }
+    return null;
+}
+console.log(findFuncInWitchSo('strcat'));
+//libc.so {"type":"function","name":"strcat","address":"0x7bc0e0322c"}
+```
+
+
+
+#### 5.2.4 Module 中的常用属性和方法
+
+Module 中的常用属性和方法之后会经常使用，查看 Module 源码中的声明
+
+```js
+declare class Module {
+    name: string;			//模块名
+    base: NativePointer;	//模块基址
+    size: number;			//模块大小
+    path: string;			//模块所在路径
+    enumerateImports(): ModuleImportDetails[];	//枚举导入表
+    enumerateExports(): ModuleExportDetails[];	//枚举导出表
+    enumerateSymbols(): ModuleSymbolDetails[];	//枚举符号表
+    findExportByName(exportName: string): NativePointer | null;	//获取导出函数地址
+    getExportByName(exportName: string): NativePointer;		//获取导出函数地址
+    static load(name: string): Module;							//加载指定模块
+    static findBaseAddress(name: string): NativePointer | null;		//获取模块基址
+    static getBaseAddress(name: string): NativePointer;			//获取模块基址
+    //获取导出函数地址
+static findExportByName(moduleName: string | null, exportName: string): NativePointer | null;	
+//获取导出函数地址
+    static getExportByName(moduleName: string | null, exportName: string): NativePointer;
+}
+```
+
+
+
+### 5.3 Frida Hook so 函数
+
+该章记录 Frida Hook so 函数，包括 Hook 导出函数、从给定地址获取内存数据、Hook 任意函数、获取指针参数返回值和获取函数执行结果、
+
+
+
+#### 5.3.1 Hook 导出函数
+
+**想对 so 函数进行 Hook，必须先得到函数的内存地址。**获取导出函数的地址，除了之前介绍的枚举导出函数的方法以外，还可以使用 Frida 提供的 API 获取。
+
+Module 的 findExportByName 和 getExportByName 都可以用来获取导出函数的内存地址，并且都有静态方法和实例方法两种。
+
+静态方法可以直接使用 **类名.方法名** 的方式来访问，传入两个参数
+
+- 第一个参数是 string 类型的模块名
+- 第二个参数是 string 类型的导出函数名（以汇编界面的名字为准）
+- 返回 NativePointer 类型的函数地址
+
+实例方法可以先获取到 Module 对象，再通过 **对象.方法名** 的方式来访问
+
+- 传入 string 类型的导出函数名即可
+- 返回 NativePointer 类型的函数地址。
+
+得到 NativePointer 类型的函数地址后，就可以使用 Interceptor 的 attach 函数进行 Hook，可以使用 Interceptor 的 detachAll 函数来解除 Hook，查看源码中的声明可以发现
+
+- Interceptor.detachAll() 不需要任何参数
+- Interceptor.attach 需要传入函数地址和被 Hook 函数触发时执行的回调函数
 
