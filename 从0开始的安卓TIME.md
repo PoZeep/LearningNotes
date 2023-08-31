@@ -657,6 +657,215 @@ if __name__ == '__main__':
 
 
 
+## [De1CTF2019]cplusplus
+
+该check检测了我们的第一段输入
+
+```C
+void __fastcall check(_WORD *input)
+{
+  signed int input_mod; // r9d
+  __int64 input_mod_copy; // r11
+  __int64 t_src; // rax
+  unsigned __int64 input_div; // r11
+  __int64 copy_src_index312; // rax
+  __int64 v7; // rdx
+  unsigned int src_srcIndex312; // eax
+  unsigned int v9; // r8d
+  int input1[4]; // [rsp+20h] [rbp-E0h] BYREF
+  __int64 copy_src[314]; // [rsp+30h] [rbp-D0h] BYREF
+  __int64 Src[314]; // [rsp+A00h] [rbp+900h] BYREF
+
+  if ( (unsigned __int16)*input > 111u )
+    goto exit;
+  input1[0] = (unsigned __int16)*input;
+  init_src((__int64)Src, input1);
+  input_mod = (unsigned __int16)*input % 12u;
+  input_mod_copy = input_mod;
+  if ( (unsigned __int64)input_mod <= 10000000 )
+  {
+    if ( input_mod )
+    {
+      t_src = Src[312];
+      do
+      {
+        if ( t_src == 0x270 )
+        {
+          change_src((__int64)Src);
+          t_src = Src[312];
+        }
+        Src[312] = ++t_src;                     // 加余数
+        --input_mod_copy;
+      }
+      while ( input_mod_copy );                 // 余数循环
+    }
+  }
+  else
+  {
+    sub_1400032E0(Src, input_mod);
+  }
+  memcpy(copy_src, Src, 0x9C8ui64);
+
+
+  input_div = (unsigned __int16)*input / 12u;
+  if ( input_div > 0x989680 )
+  {
+    sub_1400032E0(copy_src, (unsigned int)input_div);
+LABEL_11:
+    copy_src_index312 = copy_src[312];
+    goto LABEL_12;
+  }
+  if ( !((unsigned __int16)*input / 12u) )
+    goto LABEL_11;
+  copy_src_index312 = copy_src[312];
+
+  do
+  {
+    if ( copy_src_index312 == 624 )             // 检测下标越界
+    {
+      change_src((__int64)copy_src);
+      copy_src_index312 = copy_src[312];
+    }
+    copy_src[312] = ++copy_src_index312;        // 变换
+    --input_div;
+  }
+  while ( input_div );                          // 除数循环
+LABEL_12:
+  if ( copy_src_index312 == 624 )
+  {
+    change_src((__int64)copy_src);
+    copy_src_index312 = copy_src[312];
+  }
+  v7 = copy_src_index312 + 1;
+  src_srcIndex312 = *((_DWORD *)copy_src + copy_src_index312);
+  copy_src[312] = v7;
+  if ( ((((((((src_srcIndex312 >> 11) ^ src_srcIndex312) & 0xFF3A58AD) << 7) ^ (src_srcIndex312 >> 11) ^ src_srcIndex312) & 0xFFFFDF8C) << 15) ^ ((((src_srcIndex312 >> 11) ^ src_srcIndex312) & 0xFF3A58AD) << 7) ^ (src_srcIndex312 >> 11) ^ src_srcIndex312 ^ (((((((((src_srcIndex312 >> 11) ^ src_srcIndex312) & 0xFF3A58AD) << 7) ^ (src_srcIndex312 >> 11) ^ src_srcIndex312) & 0xFFFFDF8C) << 15) ^ ((((src_srcIndex312 >> 11) ^ src_srcIndex312) & 0xFF3A58AD) << 7) ^ (src_srcIndex312 >> 11) ^ src_srcIndex312) >> 18)) != 0xD4CBCF03 )
+exit:
+    _exit(0);
+  if ( v7 == 624 )
+  {
+    change_src((__int64)copy_src);
+    v7 = copy_src[312];
+  }
+  v9 = (((((((((*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) & 0xFF3A58AD) << 7) ^ (*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) & 0xFFFFDF8C) << 15) ^ ((((*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) & 0xFF3A58AD) << 7) ^ (*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) >> 18) ^ (((((((*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) & 0xFF3A58AD) << 7) ^ (*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) & 0xFFFFDF8C) << 15) ^ ((((*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7)) & 0xFF3A58AD) << 7) ^ (*((_DWORD *)copy_src + v7) >> 11) ^ *((_DWORD *)copy_src + v7);
+  *input += 0x2D * (v9 / 0x2D) - v9;
+}
+```
+
+源码，结果是系统函数代码展开了，我们的输入相当于种子
+
+```C++
+void boostFunc(unsigned short& num) {
+    //随机数check
+    //预期的num是78
+    if (num > 111) {
+        _exit(0);
+    }
+    boost::mt19937 rng(num);
+    rng.discard(num % 12);
+    //拷贝构造，保留了所有状态
+    boost::mt19937 rng_(rng);
+    rng_.discard(num / 12);
+    //这里相当于丢弃了num个随机结果
+    if (rng_() != 3570126595) {
+        _exit(0);
+    }
+    num -= (rng_() % 45);   // 45
+}
+```
+
+从别人拿得知 梅森旋转算法 可以直接搜索 1812433253 这个常量就可以确定是该算法了，那么在该IDA分析中我所标记的 init_src 就是初始化种子了，同样可以看到该常量，从此可以确定是随机数种子初始化（十六进制为 0x6C078965 也许下次是十六进制出现了）
+
+```C
+__int64 __fastcall sub_140003720(__int64 a1, _DWORD *input)
+{
+  int v2; // edx
+  int v3; // edx
+  __int64 result; // rax
+
+  *(_DWORD *)a1 = *input;
+  *(_QWORD *)(a1 + 2496) = 1i64;
+  do
+  {
+    *(_DWORD *)(a1 + 4i64 * *(_QWORD *)(a1 + 2496)) = *(_QWORD *)(a1 + 2496)
+                                                    + 1812433253
+                                                    * (*(_DWORD *)(a1 + 4i64 * *(_QWORD *)(a1 + 2496) - 4) ^ (*(_DWORD *)(a1 + 4i64 * *(_QWORD *)(a1 + 2496) - 4) >> 30));
+    ++*(_QWORD *)(a1 + 2496);
+  }
+  while ( *(_QWORD *)(a1 + 2496) < 0x270ui64 );
+  v2 = *(_DWORD *)(a1 + 1584) ^ *(_DWORD *)(a1 + 2492);
+  if ( v2 >= 0 )
+    v3 = 2 * v2;
+  else
+    v3 = (2 * (v2 ^ 0x1908B0DF)) | 1;
+  *(_DWORD *)a1 ^= (v3 ^ *(_DWORD *)a1) & 0x7FFFFFFF;
+  result = 0i64;
+  while ( !*(_DWORD *)(a1 + 4 * result) )
+  {
+    if ( (unsigned __int64)++result >= 0x270 )
+    {
+      *(_DWORD *)a1 = 0x80000000;
+      return result;
+    }
+  }
+  return result;
+}
+```
+
+于是该函数直接 copy 实现比较麻烦，采用 frida 来主动调用爆破，因为在函数的开头就限定了输入只能在 111 以内，所以思路就是遍历所有值主动调用，那么通过我主动调用的观察，只要报错就是代码程序退出了，说明我们的输入也不对，所以直接 try catch 去掉报错，继续下一个遍历直接程序正常执行完就代表我输入的值对了
+
+```js
+function main() {
+  const functionOffset = 0x29B0; 
+  var baseAddr = Module.findBaseAddress("Cplusplus.exe");
+  const check = new NativeFunction(baseAddr.add(functionOffset), "void", ["pointer"]);
+  
+  Interceptor.attach(check, {
+    onEnter: function(args) {
+        console.log("Enter: " + hexdump(args[0], {length: 16, header: false}));
+        this.arg0 = Memory.readU16(args[0]);
+        this.arg1 = args[0];
+    },
+    onLeave: function(retval) {
+        console.log("-------------------------------------------");
+        console.log("[*] success!! Answer is " + this.arg0);
+        console.log("-------------------------------------------");
+        console.log(hexdump(this.arg1, {length: 16, header: false}))
+        // console.log("Leave: " + retval);
+    }
+  });
+
+  
+  for (let value = 0; value <= 111; value++) {
+    const input = Memory.alloc(Process.pointerSize);
+    Memory.writeU16(input, value);
+    // console.log(input);
+    // console.log("Input: " + hexdump(input, {length: 16, header: false}));
+    try{
+      check(input);
+    } catch (error) {
+      // console.error("Exception occurred: " + error);
+      continue;
+    }
+    
+  }
+}
+
+
+main();
+
+
+// frida -n Cplusplus.exe -l hook.js
+```
+
+Get Flag!
+
+![image-20230830174239956](从0开始的安卓TIME/image-20230830174239956.png)
+
+
+
+
+
 # 安卓大一统类
 
 其实能调都能 Frida，开始大一统类！

@@ -2092,6 +2092,340 @@ upgraderUtil.a.overload('android.content.Context').implementation = function (co
 
 ## 算法"自吐"脚本开发
 
+Android 应用使用的加密大部分底层是基于现有的密码学算法，所以只要把现行常用的密码学加密的通用方法进行 Hook，就可以覆盖市面上大部分的 Android 应用，配合堆栈打印还可以直接定位加密点。
+
+本章讲解 MD5、MAC、数字签名算法三种加密的自吐框架开发，开发过程大同小异后续可以自己开发其他加密的框架开发。
+
+
+
+### 4.1 工具函数封装
+
+常用函数的封装，因为是对 Java 层进行 Hook，所有的代码需要放在 Java.perform。
+
+第一个封装的是堆栈打印
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+```
+
+Base64
+
+```js
+    function toBase64(data){
+        var ByteString=Java.use("com.android.okhttp.okio.ByteString");
+        console.log("ByteString:",ByteString);
+        console.log(ByteString.of(data).base64());
+    }
+```
+
+HEX、UTF8 这两个在 ByteString 类里也有，直接照写 base64 也可，因为是吐 java 层的加密，所以这些代码都写在 Java.perform 中
+
+```js
+Java.perform(function(){
+    var ByteString = Java.use("com.android.okhttp.okio.ByteString");
+    function toBase64(data) {
+        console.log(" Base64: ", ByteString.of(data).base64());
+    }
+    function toHex(data) {
+        console.log(" Hex: ", ByteString.of(data).hex());
+    }
+    function toUtf8(data) {
+        console.log(" Utf8: ", ByteString.of(data).utf8());
+    }
+    toBase64([48,49,50,51,52]);
+    toUtf8([48,49,50,51,52]);
+    toHex([48,49,50,51,52]);
+})
+```
+
+
+
+### 4.2 Frida Hook MD5 算法
+
+如果用 Java 代码编写 MD5 加密算法，通常使用 java.security.MessageDigest 类，该类为应用提供消息摘要算法的功能。MessageDigest 对象初始化之后，数据通过它使用 update 方法进行处理，一旦更新的数据都被更新，就要调用 digest 方法来完成哈希计算。所以 update 和 digest 是我们 hook 的目标。
+
+Java 编写的 MD5 如下
+
+```java
+package com.xiaojianbang.encrypt;
+
+import java.security.MessageDigest;
+import okio.ByteString;
+
+/* loaded from: classes.dex */
+public class MD5 {
+    public static String getMD5(String plainText) throws Exception {
+        MessageDigest md5 = MessageDigest.getInstance("MD5");
+        md5.update((plainText + "saltstr").getBytes());
+        byte[] digest = md5.digest();
+        return ByteString.of(digest).hex();
+    }
+}
+```
+
+
+
+#### 4.2.1 Hook MD5 算法 update 方法
+
+首先找到 java.security.MessageDigest 类，得到相应的对象，因为 update 有多个重载，所以先来个报错报出所有的重载参数的类型
+
+```js
+    var messageDigest = Java.use("java.security.MessageDigest");
+    messageDigest.update.implementation = function (data) {}
+```
+
+得到4种不同的重载方法，一般用于
+
+```
+void update(byte input)
+// 使用指定的字节更新摘要
+void update(byte[] input)
+// 使用指定的字节数组更新摘要
+void update(byte[] input, int offset, int len)
+// 使用指定的字节数组从指定的偏移量更新摘要
+void update(ByteBuffer input)
+// 使用指定的 ByteBuffer 更新摘要
+```
+
+秉持大而全的原则进行 hook 
+
+```js
+ var messageDigest = Java.use("java.security.MessageDigest");
+    messageDigest.update.overload('byte').implementation = function (data) {
+        console.log("MessageDigest.update('byte') is called!");
+        return this.update(data);
+    }
+    messageDigest.update.overload('java.nio.ByteBuffer').implementation = function (data) {
+        console.log("MessageDigest.update('java.nio.ByteBuffer') is called!");
+        return this.update(data);
+    }
+    messageDigest.update.overload('[B').implementation = function (data) {
+        console.log("MessageDigest.update('[B') is called!");
+        var algorithm = this.getAlgorithm();
+        var tag = algorithm + " update data";
+        toUtf8(tag, data);
+        toHex(tag, data);
+        toBase64(tag, data);
+        console.log("=================================================");
+        return this.update(data);
+    }
+    messageDigest.update.overload('[B', 'int', 'int').implementation = 
+function (data, start, length) {
+        console.log("MessageDigest.update('[B', 'int', 'int') is called!");
+        var algorithm = this.getAlgorithm();
+        var tag = algorithm + " update data";
+        toUtf8(tag, data);
+        toHex(tag, data);
+        toBase64(tag, data);
+        console.log("=========================================", start, length);
+        return this.update(data, start, length);
+    }
+```
+
+hook 的思路就是
+
+- 打印要加密的数据
+- log 出该有的日志，方便查看
+
+
+
+#### 4.2.2 Hook MD5 算法 digest 方法
+
+同样通过报错获得三个方法的重载
+
+首先是第一个重载方法，没有任何参数，但是返回一个字节数组，得到返回值打印即可
+
+```
+byte[] digest()
+// 通过执行最后的操作（如填充）来完成哈希计算
+```
+
+第二个重载方法如下，需要将参数提出输出，再取出方法名，输出三种不同编码打印 digest 计算后的结果
+
+```
+byte[] digest(byte[] input)
+// 使用指定的字节数组对摘要执行最终的更新，然后完成摘要计算
+```
+
+第三个重载方法
+
+```
+byte[] digest(byte[] buf, int offset, int len)
+// 通过执行最后的操作（如填充）来完成哈希计算
+```
+
+这里的hook和上一节的差不多就不放了
+
+
+
+### 4.3 Frida Hook MAC 算法
+
+MAC 算法即为消息认证码算法，作为一种携带密钥的 hash 函数，通过来验证所传输消息的完整性，我们 Hook 的对象就是 update 方法和 doFinal 方法。
+
+在 java 编写MAC方法如下
+
+```java
+package com.xiaojianbang.encrypt;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import okio.ByteString;
+
+/* loaded from: classes.dex */
+public class MAC {
+    public static String getMAC(String plainText) throws Exception {
+        SecretKeySpec hmacMD5Key = new SecretKeySpec("a123456789".getBytes(), 1, 8, "HmacSHA1");
+        Mac hmacMD5 = Mac.getInstance("HmacSHA1");
+        hmacMD5.init(hmacMD5Key);
+        hmacMD5.update(plainText.getBytes());
+        byte[] bytes = hmacMD5.doFinal("saltstr".getBytes());
+        return ByteString.of(bytes).hex();
+    }
+}
+```
+
+要获得密钥可以通过 SecretKeySpec 对象或者 init 方法，此外 update 和 doFinal 方法发种的参数也需要获取。
+
+
+
+#### 4.3.1 Hook MAC 算法密钥
+
+同样先通过报销得到  init 方法的所有重载，得到两个重载方法
+
+```
+void int(Key key)
+// 使用给定的键初始化此 Mac 对象
+void init(Key key, AlgorithmParameterSpec params)
+// 使用给定的键和算法参数初始化此 Mac 对象
+```
+
+那么对密钥的获取就直接 Hook 即可，注意的是 SecretKeySpec 类下存在一个方法
+
+```
+byte[] getEncoded()
+// 返回此密钥的密钥材料
+```
+
+通过该方法就可以拿到 key 对象的密钥字节数组了
+
+
+
+#### 4.3.2 Hook MAC 算法 update 方法
+
+MAC 算法的 update 方法可以直接使用 MD5 加密的 hook 函数，只需要对类名和内部细节加以修改。
+
+如果在测试应用种 Hook MAC 函数，会发现 update 方法输出了两次，因为 doFinal 方法内部还是会调用 update 方法加以调用，因此接下来 Hook MAC 算法的 doFinal 方法时，就不需要对输入参数进行打印输出，只需要关注输出结果。
+
+
+
+#### 4.3.3 Hook MAC 算法 doFinal 方法
+
+该方法的思路和之前 Hook 方法基本一致，存在三个重载方法
+
+```
+byte[] doFinal()
+// 完成 MAC 操作
+byte[] doFinal(byte[] input)
+// 处理给定字节数组并完成 MAC 操作
+void doFinal(byte[] output, int outOffset)
+// 完成 MAC 操作
+```
+
+书上只给了第一个重载方法的 hook，剩下的可以对照练习。
+
+
+
+### 4.4 Frida Hook 数字签名算法
+
+数字签名一般由发送者通过一个单向函数对要传送的消息进行加密产生一个其他人无法伪造一段加密串，用于认证消息的来源并检测消息是否被修改。接收者用发送者的公钥对所收到的 用发送者私钥加密的消息解密后，就可以确定消息的来源以及完整性。
+
+在 java 层的数字签名如下
+
+```java
+package com.xiaojianbang.encrypt;
+
+import android.util.Log;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.util.Arrays;
+import okio.ByteString;
+
+/* loaded from: classes.dex */
+public class Signature_ {
+    public static String getSignature(String data) throws Exception {
+        PrivateKey privateKey = RSA_Base64.generatePrivateKey();
+        Log.d("xiaojianbang", "Signature privateKey: " + Arrays.toString(privateKey.getEncoded()));
+        Signature sha256withRSA = Signature.getInstance("SHA256withRSA");
+        sha256withRSA.initSign(privateKey);
+        sha256withRSA.update(data.getBytes());
+        byte[] sign = sha256withRSA.sign();
+        return ByteString.of(sign).base64();
+    }
+
+    public static boolean verifySignature(String data, String sign) throws Exception {
+        PublicKey publicKey = RSA_Base64.generatePublicKey();
+        Log.d("xiaojianbang", "Signature publicKey: " + Arrays.toString(publicKey.getEncoded()));
+        Signature sha256withRSA = Signature.getInstance("SHA256withRSA");
+        sha256withRSA.initVerify(publicKey);
+        sha256withRSA.update(data.getBytes());
+        return sha256withRSA.verify(ByteString.decodeBase64(sign).toByteArray());
+    }
+}
+```
+
+数字签名的 Hook 代码与先前的基本一致，因此这里只对 Signature 对象中的 update 和 sign 进行 Hook，注意其中私钥没法通过 getEncoded 方法得到明文，如果遇到此类算法可以通过反编译 Android 应用获得该值。
+
+至于 verfySignature 方法不需要考虑，因为数字签名算法的思想，通常是客户端签名，服务端验证。
+
+
+
+#### 4.4.1 Hook 数字签名算法 update 方法
+
+同样通过报错获得 4 个重载方法
+
+```
+void update(byte b)
+// 更新要由一个字节签名或验证的数据
+void update(byte[] data)
+// 使用指定的字节数组更新要签名或验证的数据
+void update(byte[] data, int off, int len)
+// 使用指定的字节数组从指定的偏移量更新要签名或验证的数据
+void update(ByteBuffer data)
+// 使用指定的 ByteBuffer 更新要签名或验证的数据
+```
+
+和之前hook的思路一样，输出会发现 update 方法输出了 4 次，前两次是客户端，后两次是服务端，又因为只含有一个参数的重载方法底层调用了含有三个参数的重载方法，因此查看输出结果，只需要查看含有三个参数的重载方法即可
+
+
+
+#### 4.4.2 Hook 数字签名算法 sign 方法
+
+sign 方法有两个重载
+
+```
+byte[] sign()
+// 返回所有更新的数据的签名字节
+int sign(byte[] outbuf, int offset, int len)
+// 完成签名操作并将签名字节存储在 outbuf 中，从 offset 开始
+```
+
+
+
+书上说扫二维码查看完整代码，🐎呢？于是网上找了一个较为完整的自吐脚本.jpg
+
+
+
+
+
+
+
 ### 4.5 Objection 辅助 Hook
 
 该工具实际上做了对 Frida 框架的进一步封装，通过输入一系列的命令即可完成 Hook，不过无法对 so 代码进行 Hook，目前介绍的方法都是对 Java 层进行 Hook。
@@ -2452,9 +2786,13 @@ static findExportByName(moduleName: string | null, exportName: string): NativePo
 
 
 
-#### 5.3.1 Hook 导出函数
+#### 5.3.1 Hook 导出函数（含so文件基础概念）
 
-**想对 so 函数进行 Hook，必须先得到函数的内存地址。**获取导出函数的地址，除了之前介绍的枚举导出函数的方法以外，还可以使用 Frida 提供的 API 获取。
+（这章的知识点以段落为分，比较零散但也都挺重要）
+
+**想对 so 函数进行 Hook，必须先得到函数的内存地址。**
+
+获取导出函数的地址，除了之前介绍的枚举导出函数的方法以外，还可以使用 Frida 提供的 API 获取。
 
 Module 的 findExportByName 和 getExportByName 都可以用来获取导出函数的内存地址，并且都有静态方法和实例方法两种。
 
@@ -2469,8 +2807,864 @@ Module 的 findExportByName 和 getExportByName 都可以用来获取导出函�
 - 传入 string 类型的导出函数名即可
 - 返回 NativePointer 类型的函数地址。
 
-得到 NativePointer 类型的函数地址后，就可以使用 Interceptor 的 attach 函数进行 Hook，可以使用 Interceptor 的 detachAll 函数来解除 Hook，查看源码中的声明可以发现
+
+
+**得到 NativePointer 类型的函数地址后**
+
+就可以使用 Interceptor 的 attach 函数进行 Hook，可以使用 Interceptor 的 detachAll 函数来解除 Hook，查看源码中的声明可以发现
 
 - Interceptor.detachAll() 不需要任何参数
 - Interceptor.attach 需要传入函数地址和被 Hook 函数触发时执行的回调函数
+
+点击 CADD 按钮会调用该 native 层的 add 静态方法
+
+```java
+package com.xiaojianbang.ndk;
+
+/* loaded from: classes.dex */
+public class NativeHelper {
+    public static native int add(int a, int b, int c);
+
+    public static native String encode();
+
+    public static native String md5(String str);
+
+    static {
+        System.loadLibrary("xiaojianbang");
+    }
+}
+```
+
+那么去汇编界面获取该名，就可以 Hook 了
+
+```js
+function showStacks(){
+  Java.perform(function(){
+      console.log(
+          Java.use("android.util.Log").getStackTraceString(
+                  Java.use("java.lang.Throwable").$new()));
+  });
+}
+
+
+function main(){
+    var funcAddr = Module.findExportByName("libxiaojianbang.so", "Java_com_xiaojianbang_ndk_NativeHelper_add");
+    Interceptor.attach(funcAddr, {
+      onEnter: function (args) {
+        console.log(args[0]);
+        console.log(args[1]);
+        console.log(args[2]);
+        console.log(this.context.x3.toInt32());
+        console.log(args[4].toUInt32());
+      }, onLeave: function (retval) {
+        console.log(retval.toInt32());
+        console.log(this.context.x0);
+        console.log("取 x0 寄存器的最后三个 Bit 位", this.context.x0 & 0x7);
+      }
+    });
+}
+
+main();
+
+// frida -U -F -l hook.js --no-pause
+```
+
+```
+0x7683ca36c0
+0x7fd352e864
+0x5
+6
+7
+18
+0x12
+取 x0 寄存器的最后三个 Bit 位 2
+```
+
+onEnter 函数接收一个参数 args，类型为 InvocationArguments，源码声明为
+
+```
+type InvocationArguments=NativePointer[]
+```
+
+NativePointer 类型的数组，因此可以通过数组下标的方式访问原函数的各个参数，注意这里不能用 length 方法获取参数个数（ARM汇编的原因），如果不确定参数个数，多输出几个即可，也不会出错。
+
+**Java 层声明的 native 方法到了 so 层会额外增加两个参数**
+
+- 第0个参数是 JNIEnv * 类型的可以调用很多方法来完成 C/C++ 与 Java 的交互
+- 第1个参数是 jclass/jobject
+  - 如果 native 方法是静态方法，该参数就是 jclass
+  - 如果 native 方法是实例方法，该参数就是 jobject，代表所在的类实例化出来的对象
+
+因此上述输出的 args[0] 是 JNIEnv *，args[1] 是 jclass，后续三个参数分别对应 Java 层 native 方法声明的三个参数。
+
+add 函数 args[0] 和 args[1] 都是内存地址，可以通过 console.log(hexdump(args[0])) 来打印内存，后续三个参数都是数值，可以通过 args[4].toInt32() 或者 args[4].toUInt32() 来输出对应的十进制有符号或无符号数。
+
+还可以打印寄存器的值获取参数，arm64 中使用 x0 ~ x7 这8个寄存器来传递参数，如果函数参数多于8个，就要去栈获取参数（实际上还要考虑浮点寄存器、w 开头的32位寄存器，另外 arm32 使用是 r0 ~ r3 寄存器来传递参数），因此打印 this.context.x3，即可获得到 add 函数参数中的 6。
+
+
+
+**返回值**
+
+onLeave 函数接收一个参数 retval，类型为 InvocationReturnValue，该值继承了 NativePointer，并增加了一个 replace 方法，该方法用于替换返回值。
+
+add 函数的返回值是数值，默认输出十六进制形式，同样可以通过 retval.toInt32() 或 retval.toUInt32() 来输出对应的十进制符号是和无符号数，**也可以通过寄存器会获取返回值**
+
+- ARM64 中使用 x0 或 w0 寄存器来存放返回值
+- ARM32 中使用 r0 存放返回值，如果 r0 放不下，会占用 r1
+
+本案例中也可以使用 this.context.x0 来获取返回值，context 中没有提供 w0，w开头的32位寄存器其实就是 x开头的64位寄存器的低32位部分。
+
+
+
+**Attention**
+
+so 文件可以在 Android 应用启动时就加载，也可以在后续需要使用时再加载，Hook 时机问题很重要，后续有讲解监控 so 文件的加载。
+
+
+
+#### 5.3.2 从给定地址查看内存数据（hexdump）
+
+本小节讲解 hex dump 函数，查看源码中声明
+
+```js
+declare function hexdump(target: ArrayBuffer | NativePointerValue, options?: HexdumpOptions): string;
+interface HexdumpOptions {
+    offset?: number;	//从给定的target偏移一定字节数开始dump，默认为0
+    length?: number;	//指定dump的字节数，注意需要十进制的数值，默认16*16
+    header?: boolean;	//返回的string中是否包含标题，默认为true
+    ansi?: boolean;	//返回的string是否带颜色，默认为false
+}
+```
+
+可以发现存在默认值，是可以省略的，如果默认参数不合适也可以调整
+
+```js
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+var data = hexdump(soAddr, {length: 16, header: false});
+console.log(data);
+//  74c6c39000  7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00  .ELF............
+
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+var data = hexdump(soAddr, {offset: 4, length: 16, header: false});
+console.log(data);
+//  74c6c39004  02 01 01 00 00 00 00 00 00 00 00 00    
+```
+
+
+
+#### 5.3.3 Hook 任意函数
+
+在 so 文件中只要得到函数的内存地址，就可以完成任意函数的 Hook。
+
+而函数地址可以通过 Frida API 获取，不过只获取到出现在 导入表、导出表、符号表中的函数，也就是必须有符号的函数。
+
+自己计算函数地址是更加通用的方法，可以使用于任意函数，函数地址计算公式
+
+```
+so 文件基地址 + 函数地址相对 so 文件及地址的偏移 [+1]
+```
+
+
+
+**1. so文件基址的获取方式**
+
+由上述公式可知，自己计算函数地址首先需要 so 文件基地址，也就是模块基地址，可以通过 Module 里的 findBaseAddress 和 getBaseAddress 获取，查看源码声明
+
+```js
+declare class Module {
+......
+	static findBaseAddress(name: string): NativePointer | null;
+	static getBaseAddress(name: string): NativePointer;
+}
+```
+
+传入 string 类型的模块名，返回 NativePointer 类型的函数地址
+
+```js
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+console.log(soAddr);
+//Module.getBaseAddress("libxiaojianbang.so")
+//soAddr:  0x7b2e6c0000
+```
+
+也可以通过 Process 的各种获取 Module 的方法来得到 Module，再通过 Module 的 base 属性来获取 so 文件的基地址。
+
+
+
+**2. 函数地址相对 so 文件基地址的偏移**
+
+偏移地址直接在汇编界面找到一个函数的首地址即可，注意不要使用 plt 表上的地址，不然在 Hook 的时候会有 ''"unable to intercept function at xxxx; please file a bug"" 的错误提示。
+
+
+
+**3. 函数地址的计算**
+
+如果是 thumb 指令，函数地址计算方式则要 +1，如果是 arm 指令就不用 +1，这两种指令的区分方式可以通过 opcode 字节数区分，前者为两个字节后者为4个字节
+
+像刚刚 Hook 的 add 函数 64位就不用 + 1，
+
+![image-20230804103831419](Frida协议分析/image-20230804103831419.png)
+
+而 32 位就需要 +1
+
+![image-20230804104001608](Frida协议分析/image-20230804104001608.png)
+
+一般情况下，32位 so 文件里基本都是 thumb 指令，64位 so 文件里基本都是 arm 指令，若搞不清楚也没事，+1不+1都试试。
+
+现在计算 native 中 add 的函数地址
+
+```js
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+var funcAddr = soAddr.add(0x1ACC); 
+```
+
+代码中的 add 是 NativePointer 类中的方法，用于做 NativePointer 运算，并构造一个新的 NativePointer 返回，源码中的定义
+
+```js
+declare class NativePointer {
+    constructor(v: string | number | UInt64 | Int64 | NativePointerValue);
+	add(v: NativePointerValue | UInt64 | Int64 | number | string): NativePointer;
+......
+}
+```
+
+constructor 是 NativePointer 的构造函数，也可以使用 new NativePointer(...) 的方式把数值、字符串等类型转为 NativePointer 类型，也可以使用 new NativePointer **简写 ptr**
+
+```js
+ var soAddr = 0x77ab999000;
+ console.log( ptr(soAddr).add(0x1A0C) );  // ptr <=> new NativePointer
+```
+
+得到函数地址后，就可以使用 Intercepto.attach 完成任意函数的 Hook
+
+```js
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+var sub_1A0C = soAddr.add(0x1ACC);
+Interceptor.attach(sub_1ACC, {
+    onEnter: function (args) {
+        console.log("sub_1ACC onEnter args[0]: ", args[0]);
+        console.log("sub_1ACC onEnter args[1]: ", args[1]);
+        console.log("sub_1ACC onEnter args[2]: ", args[2]);
+        console.log("sub_1ACC onEnter args[3]: ", args[3]);
+        console.log("sub_1ACC onEnter args[4]: ", args[4]);
+    }, onLeave: function (retval) {
+        console.log("sub_1ACC onLeave retval: ", retval);
+    }
+});
+//sub_1ACC onEnter args[0]:  0x7bc3bd66c0
+//sub_1ACC onEnter args[1]:  0x7fda079fb4
+//sub_1ACC onEnter args[2]:  0x5
+//sub_1ACC onEnter args[3]:  0x6
+//sub_1ACC onEnter args[4]:  0x7
+//sub_1ACC onLeave retval:  0x12
+```
+
+
+
+#### 5.3.4 获取指针参数返回值
+
+在 C/C++ 中，通常将函数参数当返回值使用，返回值定义为 void，对于这类参数我们需要进入 onEnter 函数时，保存参数的内存地址，再在 onLeave 函数时，读取参数对应内存地址的内容。
+
+本小节以 libxiaojianbang.so 中的 MD5Final 函数为例，第 0 个参数是 MD5_CTX *，第 1 个参数用于存放加密结果的 16 个字节的 char 数组，Hook 代码如下
+
+```js
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+var MD5Final = soAddr.add(0x3A78);
+Interceptor.attach(MD5Final, {
+    onEnter: function (args) {
+        this.args1 = args[1];
+    }, onLeave: function (retval) {
+        console.log(hexdump(this.args1));
+    }
+});
+/*
+7ffc689cc8  41 be f1 ce 7f dc 3e 42 c0 e5 d9 40 ad 74 ac 00  A.....>B...@.t..
+//logcat中的输出结果
+//CMD5 md5Result: 41bef1ce7fdc3e42c0e5d940ad74ac00
+*/
+```
+
+在逆向分析中也可以不分析这一类参数，直接在 onEnter 和 onLeave 中全部打印一遍参数对应的内存数据即可。
+
+
+
+#### 5.3.5 Frida inlineHook 获取函数执行结果
+
+Frida 不仅可以对函数进行 Hook，还可以**精确到某一条指令**。
+
+举个例子
+
+```js
+var hookAddr = Module.findBaseAddress("libxiaojianbang.so").add(0x1AF4);
+Interceptor.attach(hookAddr, {
+    onEnter: function (args) {
+        console.log("onEnter x8: ", this.context.x8.toInt32());
+        console.log("onEnter x9: ", this.context.x9.toInt32());
+    }, onLeave: function (retval) {
+        console.log("onLeave x0: ", this.context.x0.toInt32());
+    }
+});
+/*
+onEnter x8:  11
+onEnter x9:  7
+onLeave x0:  18
+*/
+```
+
+当进行 inlinehook 时，onEnter 在这条指令执行之前执行，onLeave 在这条指令之后执行（使用 inlinehook 时，推荐直接访问寄存器，不推荐使用 args 和 retval）
+
+![image-20230804125323728](Frida协议分析/image-20230804125323728.png)
+
+再一个案例
+
+```js
+var hookAddr = Module.findBaseAddress("libxiaojianbang.so").add(0x1FF4);
+Interceptor.attach(hookAddr, {
+    onEnter: function (args) {
+        console.log("onEnter: ", this.context.x1);
+        console.log("onEnter: ", hexdump(this.context.x1));
+    }, onLeave: function (retval) {
+    }
+});
+/*
+onEnter:  0x7d9016ae80
+7d9016ae80  78 69 61 6f 6a 69 61 6e 62 61 6e 67 00 00 c0 41  xiaojianbang...A
+*/
+```
+
+当执行到 0x1FF4 偏移处时，寄存器 x1 的值就是传入 MD5Update 的第一个参数
+
+![image-20230804125700331](Frida协议分析/image-20230804125700331.png)
+
+看上去效果与 hook 函数相同，但实现不同，inlinehook 在获取函数执行中间结果非常有用
+
+
+
+### 5.4 Frida 修改函数参数和返回值
+
+本节讲解如何使用 Frida 框架修改函数参数和返回值，包括修改 函数数值参数 和 返回值、修改字符串参数两部分
+
+
+
+#### 5.4.1 修改函数数值参数与返回值
+
+Hook 函数以后，不但可以打印函数的参数与返回值，还可以进行修改。
+
+本小节介绍当函数的 参数 和 返回值 为**数值**时的修改方法
+
+```js
+var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+var addFunc = soAddr.add(0x1ACC);
+Interceptor.attach(addFunc, {
+    onEnter: function (args) {
+        args[2] = ptr(100);
+//this.context.x2 = 100;
+        console.log(args[2].toInt32());
+    }, onLeave: function (retval) {
+        console.log(retval.toInt32());
+        retval.replace(100);
+//this.context.x0 = 100;
+    }
+});
+/*
+args[2]:  100
+retval:  113
+//logcat中的输出为
+//CADD addResult: 100
+*/
+```
+
+对于参数的修改
+
+- 如果直接用数值赋值，args[2] = 100，会有 except a pointer 的错误提示
+  - onEnter 函数接收一个参数为 args，类型的为 NativePointer 的数组，类型不匹配自然会报错，所以任何时候都要清楚变量的类型
+- 因此把数值 100 传入 ptr 函数，构建出 NativePointer 后赋值给 args[2] 即可
+  - 当然也可以 this.context.x2 = 100 的方式来修改，这是修改寄存器的值，不需要构建 NativePointer
+
+
+
+#### 5.4.2 修改字符串参数
+
+修改数值参数和修改字符串参数本质上是一样的，都是用 NativePointer 类型的值去替换，只不过修改字符串参数时，NativePointer 类型的值是一个地址，指向内存中的字符串。
+
+本小节以 MD5Update 函数为例，通过4个方法去修改。
+
+该函数由 Java_com_xiaojianbang_ndk_NativeHelper_md5 调用，参数如此
+
+![image-20230806124425928](Frida协议分析/image-20230806124425928.png)
+
+先 Hook MD5Update 函数，把参数打印出来
+
+```js
+    var MD5Update = Module.findExportByName("libxiaojianbang.so", "_Z9MD5UpdateP7MD5_CTXPhj");
+    Interceptor.attach(MD5Update, {
+        onEnter: function (args) {
+            console.log(hexdump(args[1], {length: 16, header: false}));  //hexdump用于从给定的地址开始，dump一段内存
+            console.log(args[2].toInt32());
+        }, onLeave: function (retval) {
+        }
+    });
+/*
+7ad0ca9f40  78 69 61 6f 6a 69 61 6e 62 61 6e 67 00 00 c0 41  xiaojianbang...A
+12
+
+7ad042e000  80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+44
+
+7fda079e50  60 00 00 00 00 00 00 00 ed 17 ae 39 cf 5d 07 be  `..........9.]..
+8
+//logcat中的输出结果
+//CMD5 md5Result: 41bef1ce7fdc3e42c0e5d940ad74ac00
+*/
+```
+
+可以看出该函数一共有三次调用
+
+- 第一次调用传入明文 xiaojianbang，占 12 个字节，也就是 96 bit
+- 第二次是在 MD5Final 函数种调用，先传入一个 0x80，之后全部填 0，用于将明文填充到 448 bit，减去之前的 96 bit，正好是 352 bit，也就是 44字节（也就是第二次调用用于填充明文）、
+- 第三次调用也是在 MD5Final 调用，填入 64 bit，也就是 8 个字节，用于表示明文的 bit 长度
+
+三次 update 加入的的数据总和满足 MD5 算法一个分组长度 512 bit，这些数据会复制到 MD5_CTX 结构体的 buffer 中，用于加密。
+
+
+
+**1. 修改参数指向的内存**
+
+传到 MD5Update 函数的参数是 char * 的指针，那么修改指向的内存数据
+
+```js
+function stringToBytes(str){
+    return hexToBytes(stringToHex(str));
+}
+function stringToHex(str) {
+    return str.split("").map(function(c) {
+        return ("0" + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join("");
+}
+function hexToBytes(hex) {
+    for (var bytes = [], c = 0; c < hex.length; c += 2)
+        bytes.push(parseInt(hex.substr(c, 2), 16));
+    return bytes;
+}
+var MD5Update = Module.findExportByName("libxiaojianbang.so", "_Z9MD5UpdateP7MD5_CTXPhj");
+Interceptor.attach(MD5Update, {
+    onEnter: function (args) {
+        if(args[1].readCString() == "xiaojianbang"){
+             let newStr = "xiaojian\0";
+             args[1].writeByteArray(stringToBytes(newStr));
+             console.log(hexdump(args[1]));
+             args[2] = ptr(newStr.length - 1);
+             console.log(args[2].toInt32());
+        }
+    }, onLeave: function (retval) {
+    }
+});
+/*
+7b2e35bf50  78 69 61 6f 6a 69 61 6e 00 61 6e 67 00 00 c0 41  xiaojian.ang...A
+8
+//logcat中的输出结果
+//CMD5 md5Result: 66b0451b7a00d82790d4910a7a3a4162
+*/
+```
+
+**readCString** 是 NativePointer 类里面的方法
+
+- 用于从指定的地址读取C语言的字符串，返回 JS 的 String 类型的字符串。
+
+- 接收一个参数，用于指定读取的字节数，如果没有指定，就 C 语言字符串的结尾标志
+
+做一个判断是为了防止误改后两次的调用。
+
+
+
+**2. 将内存中已有的字符串赋值给参数**
+
+
+
+**3. 修改 MD5_CTX  结构体中的 buffer 和 count**
+
+
+
+**4. 在内存中构建新的字符串**
+
+
+
+### 5.5 实战：某热点登录协议分析
+
+去学抓包
+
+
+
+
+
+## JNI 函数的 Hook 与快速定位
+
+- 不管 so 文件怎么混淆，系统函数都是不变的，通过可以 hook 一系列系统函数来定位关键代码。
+
+- linker、libc.so、libdl.so、libart.so 中很多可以 Hook 的系统函数，其中 libart.so 在 so 文件开发中很常用。
+
+- 通过 Hook JNI 函数，可以大体知道 so 函数的代码逻辑，如常用逆向工具 Jnitrace 就是 Hook 了大量 JNI 函数，并打印参数、返回栈以及函数栈。
+
+本章主要介绍 JNI 函数的 Hook，主动调用及定位
+
+
+
+### 6.1 JNI 函数的 Hook
+
+要 hook JNI 函数，首先要获得 JNI 函数的地址，有两种方法
+
+- 枚举 libart 符号表，得到相应 JNI 函数的地址后 Hook
+- 通过计算地址的方式来 Hook，先得到 JNIEnv 结构体地址，再通过偏移得到对应 JNI 函数指针的地址，最后得到 JNI 函数真实地址（该种方法要注意 32位 和 64位 指针长度不同，偏移不同）
+
+
+
+#### 6.1.1 JNIEnv 的获取
+
+使用 C/C++ 开发 so 文件，JNIEnv* 指针变量最终指向 JNINativeInterface 结构体，一般用书 java 和 C/C++ 语言的交互、数据的转换等。
+
+那么可以直接通过 Java.vm.tryGetEnv() 获得 JNIEnv 对象，随后 handle 属性记录的就是原始 JNIEnv * 指针变量的地址
+
+```js
+var env = Java.vm.tryGetEnv().
+console.log(hexdump(env.handle));
+/*
+6f96e19500  f0 de fd a4 6f 00 00 00 00 18 e1 96 6f 00 00 00  ....o.......o...
+6f96e19510  c0 81 e9 29 70 00 00 00 00 00 00 00 00 26 00 00  ...)p........&..
+*/
+console.log(hexdump(env.handle.readPointer()));
+/*
+6fa4fddef0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+6fa4fddf00  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+6fa4fddf10  68 32 d6 a4 6f 00 00 00 14 3a d6 a4 6f 00 00 00  h2..o....:..o...
+6fa4fddf20  18 42 d6 a4 6f 00 00 00 04 4a d6 a4 6f 00 00 00  .B..o....J..o...
+*/
+```
+
+JNIEnv 结构体的前四个函数指针是保留的，后面就是一连串的函数指针，env.handle 是 NativePointer，而 env 不是所以需要转为 Nativepointer 类型，直接 ptr 即可，env 和 env.handle 在一定程度上通用的
+
+```js
+
+console.log(hexdump(Memory.readPointer(env)));
+//console.log(hexdump(ptr(env).readPointer()));
+/*
+6fa4fddef0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+6fa4fddf00  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+6fa4fddf10  68 32 d6 a4 6f 00 00 00 14 3a d6 a4 6f 00 00 00  h2..o....:..o...
+6fa4fddf20  18 42 d6 a4 6f 00 00 00 04 4a d6 a4 6f 00 00 00  .B..o....J..o...
+*/
+```
+
+要得到原始 JNIEnv* 指针变量的内存地址，也可以 Hook 某些函数来做到，如 Hook JNI 静态注册和动态注册函数的第 0 个参数就是 JNIEnv* 指针变量。
+
+
+
+#### 6.1.2 枚举 libart 符号表来 Hook
+
+可以用 find 命令从系统中拉出来
+
+![image-20230830091441139](Frida协议分析/image-20230830091441139.png)
+
+以 Hook libart.so 中的 NewStringUTF 为例，该函数用于将 C语言字符串转换为 Java字符串，但含有两个，需要 Hook 的是不包含 checkJNI 的符号
+
+![image-20230830091708114](Frida协议分析/image-20230830091708114.png)
+
+代码如下
+
+```js
+function hook_jni() {
+    var _symbols = Process.getModuleByName("libart.so").enumerateSymbols();
+    var newStringUtf = null;
+    for (let i = 0; i < _symbols.length; i++) {
+        var _symbol = _symbols[i];
+        if(_symbol.name.indexOf("CheckJNI") == -1 && _symbol.name.indexOf("NewStringUTF") != -1){
+            newStringUtf = _symbol.address;
+        }
+    }
+    Interceptor.attach(newStringUtf, {
+        onEnter: function (args) {
+            console.log("newStringUtf  args: ", args[1].readCString());
+        }, onLeave: function (retval) {
+            console.log("newStringUtf  retval: ", retval);
+        }
+    });
+}
+hook_jni();
+/*
+newStringUtf args:  GB2312
+newStringUtf retval:  0x81
+newStringUtf args:  41bef1ce7fdc3e42c0e5d940ad74ac00
+newStringUtf retval:  0xa9
+*/
+```
+
+
+
+#### 6.1.3 通过计算地址的方式来 Hook
+
+之前介绍过可以通过计算地址的方式来 hook，但要注意 32位和 64位的大小不一样所以偏移不一样。NewStringUTF 是 JNIEnv结构体中的 167 个函数指针（从0开始算），在 64位程序一个指针 8 字节，在 32 位程度一个指针 4 字节，代码如下
+
+```js
+var envAddr = Java.vm.tryGetEnv().handle.readPointer();
+var NewStringUTF = envAddr.add(167 * Process.pointerSize);
+var NewStringUTFAddr = envAddr.add(167 * Process.pointerSize).readPointer();
+console.log(hexdump(NewStringUTF));
+console.log(hexdump(NewStringUTFAddr));
+console.log(Instruction.parse(NewStringUTFAddr).toString());
+/*
+6fa4fde428  ec 30 d7 a4 6f 00 00 00 a0 38 d7 a4 6f 00 00 00  .0..o....8..o...
+6fa4fde438  50 40 d7 a4 6f 00 00 00 70 40 d7 a4 6f 00 00 00  P@..o...p@..o...
+
+6fa4d730ec  ff 43 03 d1 fc 6f 07 a9 fa 67 08 a9 f8 5f 09 a9  .C...o...g..._..
+6fa4d730fc  f6 57 0a a9 f4 4f 0b a9 fd 7b 0c a9 fd 03 03 91  .W...O...{......
+
+sub sp, sp, #0xd0
+*/
+```
+
+Process.pointerSize 在 32位和 64位自动变换，解决了偏移地址不一样的问题。还可以使用 frida 提供的 Instruction.parse 将指令转换为汇编代码，那么有了目标函数的地址 Hook 就方便了
+
+```js
+function hook_jni2() {
+    var envAddr = Java.vm.tryGetEnv().handle.readPointer();
+    var NewStringUTFAddr = envAddr.add(167 * Process.pointerSize).readPointer();
+    Interceptor.attach(NewStringUTFAddr, {
+        onEnter: function (args) {
+            console.log("FindClass args: ", args[1].readCString());
+        }, onLeave: function (retval) {
+            console.log("FindClass retval: ", retval);
+        }
+    });
+}
+hook_jni2();
+/*
+newStringUtf args:  GB2312
+newStringUtf retval:  0x81
+newStringUtf args:  41bef1ce7fdc3e42c0e5d940ad74ac00
+newStringUtf retval:  0xa9
+*/
+```
+
+
+
+### 6.2 主动调用 so 函数
+
+对于 jstring 来说，需要调用 JNI 函数 GetStringUTFChars 转为 C 语言 const char * 以后，才能导出内存查看数据。
+
+
+
+#### 6.2.1 Frida API 主动调用 JNI 函数
+
+先通过 Java.vm.tryGetEnv() 获取 Frida 包装后的 JNIEnv 对象，接着就可以通过 Frida 封装的 API 来调用 JNI 函数。
+
+Frida 对这些 API 命名采用小驼峰，而原始 JNI 函数采用大驼峰，并且 UTF 大写。比如原始 JNI 函数 NewStringUTF 在 Frida 封装中变成了 newStringUtf。
+
+参数中也不同，封装的 API 不需要传 JNIEnv*，所以将上一小节的代码做修改
+
+```js
+function hook_jni() {
+    var _symbols = Process.getModuleByName("libart.so").enumerateSymbols();
+    var newStringUtf = null;
+    for (let i = 0; i < _symbols.length; i++) {
+        var _symbol = _symbols[i];
+        if(_symbol.name.indexOf("CheckJNI") == -1 && _symbol.name.indexOf("NewStringUTF") != -1){
+            newStringUtf = _symbol.address;
+        }
+    }
+    Interceptor.attach(newStringUtf, {
+        onEnter: function (args) {
+            console.log("newStringUtf  args: ", args[1].readCString());
+        }, onLeave: function (retval) {
+            var cstr = Java.vm.tryGetEnv().getStringUtfChars(retval);
+            console.log(hexdump(cstr));
+            console.log("newStringUtf  retval: ", cstr.readCString());
+        }
+    });
+}
+hook_jni();
+/*
+newStringUtf  args:  GB2312
+6f94653dc0  47 42 32 33 31 32 00 00 00 00 00 00 00 00 00 00  GB2312..........
+6f94653dd0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+newStringUtf  retval:  GB2312
+
+newStringUtf  args:  41bef1ce7fdc3e42c0e5d940ad74ac00
+6f96e081d0  34 31 62 65 66 31 63 65 37 66 64 63 33 65 34 32  41bef1ce7fdc3e42
+6f96e081e0  63 30 65 35 64 39 34 30 61 64 37 34 61 63 30 30  c0e5d940ad74ac00
+newStringUtf  retval:  41bef1ce7fdc3e42c0e5d940ad74ac00
+*/
+```
+
+主动调用 GetStringUTFChars 函数，传入的 retval 参数是 jstring 类型，返回的 cstr 是一个地址，然后用 readCString 来显示字符串。最终结果和 NewStringUTF 传入的实参一样，因此 JNI 函数的 GetStringUTFChars 和 NewStringUTF 的作用刚好相反。
+
+
+
+#### 6.2.2 so 层文件打印函数栈
+
+通过 Hook 某些系统函数并打印函数栈是快捷定位关键代码的方法之一，在 Frida 中可以使用 Thread.backtrace 来获取函数栈。（Backtrace 的源码和声明书上有就不打了 P139）
+
+DebugSymbol.fromAddress 用来获取对应地址的调试信息。
+
+综上所述，想要打印函数栈，只要将 Thread.backtrace 返回的数据中的地址依次传入 DebugSymbol 获取相应的调试信息输出即可。
+
+```js
+function hook_jni() {
+    var _symbols = Process.getModuleByName("libart.so").enumerateSymbols();
+    var newStringUtf = null;
+    for (let i = 0; i < _symbols.length; i++) {
+        var _symbol = _symbols[i];
+        if(_symbol.name.indexOf("CheckJNI") == -1 && _symbol.name.indexOf("NewStringUTF") != -1){
+            newStringUtf = _symbol.address;
+        }
+    }
+    Interceptor.attach(newStringUtf, {
+        onEnter: function (args) {
+            console.log(Thread.backtrace(this.context, Backtracer.ACCURATE).map(DebugSymbol.fromAddress).join("\n") + "\n");
+            console.log("newStringUtf  args: ", args[1].readCString());
+        }, onLeave: function (retval) {
+        }
+    });
+}
+hook_jni();
+/*
+0x79ca9793a8 libart.so!_ZN3art12_GLOBAL__N_18CheckJNI12NewStringUTFEP7_JNIEnvPKc+0x2bc
+0x79604347f8 libxiaojianbang.so!_ZN7_JNIEnv12NewStringUTFEPKc+0x2c
+0x7960434fd0 libxiaojianbang.so!Java_com_xiaojianbang_ndk_NativeHelper_md5+0x194
+0x79ca75a354 libart.so!art_quick_generic_jni_trampoline+0x94
+0x79ca7515bc libart.so!art_quick_invoke_static_stub+0x23c
+......
+newStringUtf  args:  41bef1ce7fdc3e42c0e5d940ad74ac00
+*/
+```
+
+map 是 JavaScript 中数组的方法，用于遍历数组成员。so 函数将数据加密后，如果需要以字符串的方式返回给 Java 层，那么必然需要 NewStringUTF 函数，Hook 该函数并打印函数栈，大概率能定位到关键函数处于哪个 so 文件的哪个函数。
+
+
+
+#### 6.2.3 DebugSymbol 类
+
+书上给出了该类的源码声明（P141）
+
+简单测试这些属性和方法
+
+```js
+var debsym = DebugSymbol.fromName("strcat");
+console.log("address: ", debsym.address);
+console.log("name: ", debsym.name);
+console.log("moduleName: ", debsym.moduleName);
+console.log("fileName: ", debsym.fileName);
+console.log("lineNumber: ", debsym.lineNumber);
+console.log("toString: ", debsym.toString());
+
+console.log("getFunctionByName: ", DebugSymbol.getFunctionByName("strcat"));
+console.log("findFunctionsNamed: ", DebugSymbol.findFunctionsNamed("JNI_OnLoad"));
+console.log("findFunctionsMatching: ", DebugSymbol.findFunctionsMatching("JNI_OnLoad"));
+/*
+address:  0x7a4d20222c
+name:  strcat
+moduleName:  libc.so
+fileName:
+lineNumber:  0
+toString:  0x7a4d20222c libc.so!strcat
+
+getFunctionByName:  0x7a4d20222c
+findFunctionsNamed:  0x79c20cf89c,0x79c206d35c,0x79c08b1898,0x79b6419ab8,0x79b6377014,0x79b62e7070,0x79b27cd1f8,0x796f4eef0c,0x7960434d28
+findFunctionsMatching:  0x7960434d28,0x796f4eef0c,0x79b27cd1f8,0x79b62e7070,0x79b6377014,0x79b6419ab8,0x79c08b1898,0x79c206d35c,0x79c20cf89c
+*/
+```
+
+
+
+#### 6.2.4 so 层主动调用任意函数
+
+之前介绍的都是被动 Hook，也就是只有 app 主动调用了才会触发 hook 代码，调用的时机由 APP 自己决定，传入的参数也是 APP 来构造，那么如何自己主动构造，自己构造参数？
+
+Frida 提供了 new NativeFunction 的方式来创建函数指针
+
+```
+new NativeFunction(address, returnType, argTypes[, abi])
+```
+
+需要传入 函数地址、返回值类型、参数类型数组和可省略的 abi 参数。
+
+returnType 和 argTypes 支持的类型很多，比较常用的是 void、pointer 和 int。
+
+如主动调用 jstring2cstr，该函数两个参数 JNIEnv*、jstring，返回 const char *，这三个类型在 nativefunction 中均为 pointer，所以构造为
+
+```
+new NativeFunction(funcaddr, 'pointer', ['pointer', 'pointer'])
+```
+
+主动调用代码如下
+
+```js
+Java.perform(function () {
+    var soAddr = Module.findBaseAddress("libxiaojianbang.so");
+    var funAddr = soAddr.add(0x16BC);
+    var jstr2cstr = new NativeFunction(funAddr, 'pointer', ['pointer','pointer']);
+var env = Java.vm.tryGetEnv();
+//主动调用jni函数newStringUtf，将JavaScript的字符串转为Java字符串
+    var jstring = env.newStringUtf("xiaojianbang");
+//传递实参使用可以直接使用Frida包装后的JNIENV对象
+    var retval = jstr2cstr(env.handle, jstring);
+    //var retval = jstr2cstr(env, jstring);
+    console.log(retval.readCString());
+});
+//xiaojianbang
+```
+
+
+
+#### 6.2.5 通过 NativeFunction 主动调用 JNI 函数
+
+本小节演示通过 NativeFunction 声明 JNI 函数指针调用 JNI 函数的方法
+
+```js
+var symbols = Process.getModuleByName("libart.so").enumerateSymbols();
+var NewStringUTFAddr = null;
+var GetStringUTFCharsAddr = null;
+for (var i = 0; i < symbols.length; i++) {
+    var symbol = symbols[i];
+    if(symbol.name.indexOf("CheckJNI") == -1 && symbol.name.indexOf("NewStringUTF") != -1){
+        NewStringUTFAddr = symbol.address;
+    }else if (symbol.name.indexOf("CheckJNI") == -1 && symbol.name.indexOf("GetStringUTFChars") != -1){
+        GetStringUTFCharsAddr = symbol.address;
+    }
+}
+var NewStringUTF = new NativeFunction(NewStringUTFAddr, 'pointer', ['pointer', 'pointer']);
+var GetStringUTFChars = new NativeFunction(GetStringUTFCharsAddr, 'pointer', ['pointer', 'pointer', 'pointer']);
+
+var jstring = NewStringUTF(Java.vm.tryGetEnv().handle, Memory.allocUtf8String("xiaojianbang"));
+console.log(jstring);
+
+var cstr = GetStringUTFChars(Java.vm.tryGetEnv(),  jstring,  ptr(0));
+console.log(cstr.readCString());
+/*
+0x1
+xiaojianbang
+*/
+```
+
+上述代码获取了函数地址，接着声明了两个函数指针，声明与 jni.h 一致。
+
+GetStringUTFChars 最后一个参数是 jboolean *，最简单的方法就是传入 ptr(0) 空指针，实际上应该传入一个地址，这个地址存放一个字节的数据，并且有权限访问
+
+```js
+var cstr = GetStringUTFChars(Java.vm.tryGetEnv(),  jstring,  Memory.alloc(1).writeS8(1));
+console.log(cstr.readCString());
+//xiaojianbang
+```
+
+在声明 new NativeFunction 声明函数指针，某些参数与 jni.h 中不一致也是可以调用如  GetStringUTFChar 可以只传入两个参数
+
+```js
+//......
+var GetStringUTFChars = new NativeFunction(GetStringUTFCharsAddr, 'pointer', ['pointer', 'pointer']);
+var cstr = GetStringUTFChars(Java.vm.tryGetEnv(),  jstring);
+console.log(cstr.readCString());
+//xiaojianbang
+```
+
+
+
+### 6.3 JNI 函数注册的快速定位
 
